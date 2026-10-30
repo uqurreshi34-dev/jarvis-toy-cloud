@@ -64,6 +64,17 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   needs one, or when the model says it does (it answers just SEARCH); then answered from the results.
   The model is always told today's date and the town.
 
+## Faces and memory
+
+- "Jarvis, learn my face, I'm Sarah": the toy is asked for a few faces (`X-Jarvis-Faces`), each is
+  fingerprinted here (OpenCV's YuNet and SFace, fetched on first use and checked by SHA-256), and
+  kept as Sarah's. Anyone can, each by their own name. A known face coming into view is greeted
+  by name, once in ten minutes. A stranger's face is compared and let go, never kept.
+- "Who am I", "who do you know", "forget my face", "forget Sarah", "forget everyone".
+- "Jarvis, I live in Leeds": kept, and used for the time and the weather before any guess.
+- "What can you see", "is anyone there": from the toy's last report, and who, if it knows them.
+- Kept in Postgres at `DATABASE_URL` (Neon's free plan). Without it, in memory until restart.
+
 ## Trying it from the PC
 
 ```
@@ -81,7 +92,7 @@ python -m pytest -q
 
 1. Talk: done here.
 1b. PC mode and cloud mode; what the toy sees, said on the toy: done here.
-2. Memory that survives restarts (a free database).
+2. Memory that survives restarts, faces by name, what it can see: done here.
 3. Web search, the time and the weather: done here (telling it where it lives comes with memory).
 4. Announcements, including ones PC JARVIS sends.
 5. Hearing "Jarvis" on the chip itself.

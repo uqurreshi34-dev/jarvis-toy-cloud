@@ -12,6 +12,7 @@ for). Nothing here is kept beyond memory.
 """
 
 import os
+import re
 import threading
 import time
 
@@ -22,7 +23,7 @@ MAX_LABEL = 40
 # Said sentences wait this long for the toy to fetch them, then are stale.
 PENDING_SECONDS = 60.0
 
-_NUMBERS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+_NUMBERS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "sheep", "skis": "skis",
               "scissors": "scissors", "bus": "buses", "wine glass": "wine glasses", "couch": "couches",
@@ -30,7 +31,12 @@ _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "
 
 _lock = threading.Lock()
 _present = {}    # (toy, label) -> {"last": monotonic time last in view, "said": how many said}
-_pending = {}    # toy -> (sentence, monotonic time)
+_pending = {}    # toy -> [(sentence, monotonic time), ...], said in order
+_latest = {}     # toy -> ({label: count}, monotonic time): its last report
+
+# The toy reports every change, and every 15 seconds while anything is in view: a report older
+# than this, with things in it, is not what is in view now.
+FRESH_SECONDS = 40.0
 
 
 def _ignored():
@@ -107,6 +113,8 @@ def record(toy, payload, now=None):
     due = {}
 
     with _lock:
+        _latest[toy] = (dict(counts), now)
+
         for label, count in counts.items():
             seen = _present.get((toy, label))
 
@@ -121,22 +129,74 @@ def record(toy, payload, now=None):
                 due[label] = count
 
         if due:
-            _pending[toy] = (words(due), now)
+            _pending.setdefault(toy, []).append((words(due), now))
 
     return bool(due)
 
 
-def take(toy, now=None):
-    """The sentence waiting for [toy], once; None when there is none (or it went stale)."""
+def queue(toy, sentence, now=None):
+    """Something else for [toy] to say unasked (a greeting, how learning a face went)."""
     now = time.monotonic() if now is None else now
 
     with _lock:
-        waiting = _pending.pop(toy, None)
+        _pending.setdefault(toy, []).append((sentence, now))
 
-    if not waiting or now - waiting[1] > PENDING_SECONDS:
-        return None
 
-    return waiting[0]
+def take(toy, now=None):
+    """What is waiting for [toy], once, in order; None when nothing is (or it all went stale)."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        waiting = _pending.pop(toy, [])
+
+    fresh = [sentence for sentence, at in waiting if now - at <= PENDING_SECONDS]
+    return " ".join(fresh) if fresh else None
+
+
+_SIGHT = re.compile(
+    r"^(?:what|who)\s+(?:can|do)\s+you\s+see(?:\s+(?:now|right\s+now|there))?"
+    r"|^(?:whats|whos|(?:what|who)\s+is)\s+in\s+(?:front\s+of\s+you|view|the\s+room)"
+    r"|^(?:is\s+)?(?:any\s*one|any\s*body|someone|somebody)\s+(?:there|here|in\s+view)"
+    r"|^can\s+you\s+see\s+(?:me|any\s*one|any\s*body|anything)"
+    r"|^what\s+are\s+you\s+looking\s+at"
+)
+
+
+def sight_asked(text):
+    """True when [text] asks what the toy can see ("what can you see", "is anyone there")."""
+    words = " ".join(re.sub(r"[^\w\s]", " ", str(text or "").casefold().replace("'", "")).split())
+    words = " ".join(word for word in words.split() if word not in ("jarvis", "sir"))
+    return bool(_SIGHT.match(words))
+
+
+def describe(toy, name=None, now=None):
+    """What the toy can see now, said, from its last report; [name] is the person it last knew."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        latest = _latest.get(toy)
+
+    if not latest:
+        return "My eyes haven't told me anything yet, sir. Give me a moment."
+
+    counts, at = latest
+
+    if not counts or now - at > FRESH_SECONDS:
+        return "Nothing I recognise right now, sir."
+
+    if name and "person" in counts:
+        others = {label: count for label, count in counts.items() if label != "person"}
+        people = counts["person"]
+        said = name if people == 1 else f"{name} and {_NUMBERS.get(people - 1, people - 1)} " \
+            f"{'other person' if people == 2 else 'other people'}"
+
+        if others:
+            rest = words(others)[len("I can see "):-len(", sir.")]
+            return f"I can see you, {name}, and {rest}." if people == 1 else f"I can see {said}, and {rest}."
+
+        return f"I can see you, {name}." if people == 1 else f"I can see {said}."
+
+    return words(counts)
 
 
 def forget():
@@ -144,3 +204,4 @@ def forget():
     with _lock:
         _present.clear()
         _pending.clear()
+        _latest.clear()

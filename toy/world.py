@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from toy import store
+
 IP_URL = "https://ipapi.co/{ip}/json/"
 IP_URL_SPARE = "https://ipwho.is/{ip}"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
@@ -77,8 +79,15 @@ def _named_place(name):
             "timezone": found.get("timezone")}
 
 
-def place(ip=None):
-    """Where the toy is: {"city", "lat", "lon", "timezone"}, any of them None when not known."""
+def place(ip=None, toy=None):
+    """Where the toy is: {"city", "lat", "lon", "timezone"}, any of them None when not known. What it
+    was told ("Jarvis, I live in Leeds") first, then TOY_PLACE, then a guess from its address."""
+    if toy:
+        told = store.get_place(toy)
+
+        if told:
+            return told
+
     named = (os.getenv("TOY_PLACE") or "").strip()
     key = f"name:{named}" if named else f"ip:{ip}"
     kept = _kept(key)
@@ -96,7 +105,12 @@ def place(ip=None):
             return nothing
 
         found = _from_address(IP_URL, ip) or _from_address(IP_URL_SPARE, ip)
-        return _remember(key, found) if found else nothing
+
+        if not found:
+            print("[toy-cloud] where: neither address lookup knew where the toy is", flush=True)
+            return nothing
+
+        return _remember(key, found)
     except (requests.RequestException, ValueError):
         return nothing
 
@@ -104,11 +118,17 @@ def place(ip=None):
 def _from_address(url, ip):
     """A place from one address lookup service, or None. Both answer city, latitude and longitude;
     ipapi.co gives the time zone as a name, ipwho.is inside "timezone": {"id": ...}."""
+    service = url.split("/")[2]
+
     try:
         response = requests.get(url.format(ip=ip), timeout=TIMEOUT, headers={"User-Agent": "JARVIS-toy-cloud"})
         data = response.json() if response.status_code == 200 else {}
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as error:
+        print(f"[toy-cloud] where: {service} failed ({type(error).__name__})", flush=True)
         return None
+
+    if response.status_code != 200:
+        print(f"[toy-cloud] where: {service} answered {response.status_code}", flush=True)
 
     if not isinstance(data, dict) or data.get("error") or data.get("success") is False or not data.get("city"):
         return None
@@ -228,10 +248,12 @@ def weather_words(when, where):
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
         })
         data = response.json() if response.status_code == 200 else None
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as error:
+        print(f"[toy-cloud] weather: Open-Meteo failed ({type(error).__name__})", flush=True)
         data = None
 
     if not data:
+        print("[toy-cloud] weather: no forecast came back", flush=True)
         return None
 
     daily = data.get("daily") or {}
@@ -262,6 +284,41 @@ def weather_words(when, where):
         said += f", with a {round(rain)} percent chance of rain"
 
     return said + "."
+
+
+_LIVE_IN = re.compile(r"^(?:i|we)\s+(?:live|am\s+living|are\s+living)\s+in\s+([a-z][a-z .'-]{1,60})$"
+                      r"|^(?:my|our)\s+home\s+is\s+in\s+([a-z][a-z .'-]{1,60})$"
+                      r"|^(?:you\s+are|youre)\s+in\s+([a-z][a-z .'-]{1,60})$")
+
+
+def lives_in_asked(text):
+    """The town in "I live in Leeds" / "you're in Leeds", or None."""
+    found = _LIVE_IN.match(_normal(text).replace("jarvis ", ""))
+
+    if not found:
+        return None
+
+    town = next(group for group in found.groups() if group).strip()
+    return " ".join(part.capitalize() for part in town.split())
+
+
+def learn_place(toy, town):
+    """Looks [town] up and keeps it as where [toy] lives. What to say."""
+    try:
+        found = _named_place(town)
+    except (requests.RequestException, ValueError):
+        found = None
+
+    if not found or found.get("lat") is None:
+        return f"I couldn't find {town} on the map, sir. Try saying it another way."
+
+    if not store.set_place(toy, found):
+        return "I couldn't save that just now, sir. Try me again in a moment."
+
+    return f"Noted, sir. I'll give you the time and weather for {found['city']}."
+
+
+UNKNOWN_PLACE = "I don't know where we are yet, sir. Tell me: Jarvis, I live in, and your town."
 
 
 def forget():

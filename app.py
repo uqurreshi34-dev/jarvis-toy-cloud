@@ -27,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from toy import brain, hearing, modes, seen, social, voice, wake, world
+from toy import brain, faces, hearing, modes, seen, social, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -66,7 +66,9 @@ _toys_lock = threading.Lock()
 
 def _toy(name):
     with _toys_lock:
-        return _toys.setdefault(name or "toy", {"muted": False, "follow_until": 0.0, "fallback_said": None})
+        name = name or "toy"
+        return _toys.setdefault(name, {"name": name, "muted": False, "follow_until": 0.0, "fallback_said": None,
+                                       "faces_wanted": 0})
 
 
 def _authorised():
@@ -98,31 +100,55 @@ def _toy_address():
     return forwarded or request.remote_addr
 
 
-def answer_words(text, ip=None):
-    """(what to say, mood) for a command: thanks and affection, the time, the date and the weather
-    free; everything else the model's, searched first when it needs live information."""
+def answer_words(text, ip=None, toy=None):
+    """(what to say, mood) for a command: thanks and affection, faces, where it lives, the time, the
+    date and the weather free; everything else the model's, searched first when it needs live
+    information. A face lesson asks the toy for faces (toy["faces_wanted"], sent as X-Jarvis-Faces)."""
+    toy = toy if toy is not None else _toy("toy")
+    name = toy["name"]
     which = social.kind(text)
 
     if which:
         return social.reply(which), "affection" if which in social.FOND_KINDS else ""
 
+    face = faces.asked(text)
+
+    if face:
+        said, wanted = faces.handle(name, *face)
+        toy["faces_wanted"] = wanted
+        return said, ""
+
+    if seen.sight_asked(text):
+        return seen.describe(name, faces.last_known(name)), ""
+
+    town = world.lives_in_asked(text)
+
+    if town:
+        return world.learn_place(name, town), ""
+
     asked = world.time_asked(text)
     where = None
 
     if asked:
-        where = world.place(ip)
+        where = world.place(ip, name)
         return world.time_words(asked, world.now(where)), ""
 
     when = world.weather_asked(text)
 
     if when:
-        where = world.place(ip)
+        where = world.place(ip, name)
+
+        if where.get("lat") is None:
+            return world.UNKNOWN_PLACE, ""
+
         said = world.weather_words(when, where)
 
         if said:
             return said, ""
 
-    where = where or world.place(ip)
+        return "I couldn't get the weather just now, sir. Try me again in a moment.", ""
+
+    where = where or world.place(ip, name)
     moment = world.now(where)
     today = f"{moment.strftime('%A')} {moment.day} {moment.strftime('%B %Y')}, {moment.strftime('%H:%M')}"
     return brain.answer(text, today=today, city=where.get("city") or ""), ""
@@ -196,7 +222,7 @@ def respond(wav, heard_by, toy, ip=None):
 
     print(f'[toy] heard "{text}"', flush=True)
 
-    said, mood = answer_words(text, ip)
+    said, mood = answer_words(text, ip, toy)
 
     toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS if hands_free else 0.0
     return said, mood, ""
@@ -214,7 +240,7 @@ def _fallback_note(toy, now=None):
     return FALLBACK_WORDS
 
 
-def _pcm_response(said, mood="", switch=""):
+def _pcm_response(said, mood="", switch="", faces_wanted=0):
     data = voice.pcm16(said)
 
     if not data:
@@ -228,6 +254,9 @@ def _pcm_response(said, mood="", switch=""):
 
     if switch:
         headers["X-Jarvis-Switch"] = switch
+
+    if faces_wanted:
+        headers["X-Jarvis-Faces"] = str(faces_wanted)
 
     return data, 200, headers
 
@@ -269,7 +298,8 @@ def toy_talk():
         note = _fallback_note(toy)
         said = f"{note} {said}" if note else said
 
-    return _pcm_response(said, mood, switch)
+    wanted, toy["faces_wanted"] = toy["faces_wanted"], 0
+    return _pcm_response(said, mood, switch, wanted)
 
 
 @app.post("/camera/seen")
@@ -285,6 +315,13 @@ def camera_seen():
 
     if due is None:
         return jsonify({"error": "not a report"}), 400
+
+    # A face lesson that ran out of time says so, once.
+    late = faces.learning_timed_out(name)
+
+    if late:
+        seen.queue(name, late)
+        due = True
 
     # A muted toy says nothing unasked either.
     if _toy(name)["muted"]:
@@ -310,8 +347,9 @@ def toy_announce():
 
 @app.post("/camera/face")
 def camera_face():
-    """A face the toy's own face finder saw. Recognising whose it is comes next (it needs the
-    memory database first); for now it is checked and let go, never kept."""
+    """A face the toy's own face finder saw: learned from while a lesson is on ("Jarvis, learn my face,
+    I'm Sarah"), else recognised, and a known face greeted by name. The picture itself is never kept,
+    and nothing about a stranger's face. Answers "say": true when there are words for the toy."""
     if not _authorised():
         return jsonify({"error": "unauthorised"}), 403
 
@@ -321,8 +359,33 @@ def camera_face():
     if request.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold() != "image/jpeg":
         return jsonify({"error": "a face must be a JPEG"}), 400
 
-    request.get_data(cache=False)
-    return jsonify({"ok": True}), 200
+    name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+    picture = request.get_data(cache=False)
+    hour = world.now(world.place(_toy_address(), name)).hour
+
+    try:
+        said = faces.take(name, picture, hour)
+    except Exception as error:   # noqa: BLE001 - a face that cannot be read must not stop the toy
+        print(f"[toy-cloud] faces: {type(error).__name__}: {error}", flush=True)
+        said = None
+
+    if said and not _toy(name)["muted"]:
+        seen.queue(name, said)
+        return jsonify({"ok": True, "say": True}), 200
+
+    return jsonify({"ok": True, "say": False}), 200
+
+
+def _warm_up():
+    """The face models fetched and loaded before the first face arrives, not while it waits."""
+    try:
+        faces._ready()
+    except Exception as error:   # noqa: BLE001 - tried again on the first face
+        print(f"[toy-cloud] faces: not ready yet ({type(error).__name__})", flush=True)
+
+
+if os.getenv("TOY_WARM_UP", "1") != "0":
+    threading.Thread(target=_warm_up, daemon=True).start()
 
 
 if __name__ == "__main__":

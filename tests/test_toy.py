@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+os.environ["TOY_WARM_UP"] = "0"   # no model download while testing
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as toy_app  # noqa: E402
@@ -374,7 +376,7 @@ def test_words():
 
 def test_face_is_taken_and_let_go(client):
     headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
-    assert client.post("/camera/face", data=b"\xff\xd8jpeg", headers=headers).get_json() == {"ok": True}
+    assert client.post("/camera/face", data=b"\xff\xd8jpeg", headers=headers).get_json() == {"ok": True, "say": False}
     assert client.post("/camera/face", data=b"x" * (toy_app.MAX_FACE_BYTES + 1), headers=headers).status_code == 413
     headers["Content-Type"] = "image/png"
     assert client.post("/camera/face", data=b"png", headers=headers).status_code == 400
@@ -409,7 +411,7 @@ def test_time_words():
 
 def test_the_time_is_free_and_local(client, monkeypatch):
     monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("no model call for the time"))
-    monkeypatch.setattr(world, "place", lambda ip=None: {"city": "Birmingham", "lat": 52.5, "lon": -1.9,
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: {"city": "Birmingham", "lat": 52.5, "lon": -1.9,
                                                         "timezone": "Europe/London"})
     said = talk(client, "Jarvis, what time is it").data.decode()
     assert said.startswith("It's ") and said.endswith(("am, sir.", "pm, sir."))
@@ -494,7 +496,7 @@ def test_toy_place_setting_wins(monkeypatch):
 
 def test_the_weather_is_free(client, monkeypatch):
     monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("no model call"))
-    monkeypatch.setattr(world, "place", lambda ip=None: {"city": "Birmingham", "lat": 1, "lon": 2,
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: {"city": "Birmingham", "lat": 1, "lon": 2,
                                                         "timezone": "Europe/London"})
     monkeypatch.setattr(world, "weather_words", lambda when, where: f"Weather {when}.")
     assert talk(client, "Jarvis, will it rain tomorrow").data == b"Weather tomorrow."
@@ -502,7 +504,7 @@ def test_the_weather_is_free(client, monkeypatch):
 
 def test_the_toys_address_is_its_forwarded_one(client, monkeypatch):
     seen_ips = []
-    monkeypatch.setattr(world, "place", lambda ip=None: seen_ips.append(ip) or
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: seen_ips.append(ip) or
                         {"city": None, "lat": None, "lon": None, "timezone": None})
     client.heard["text"] = "Jarvis, what time is it"
     client.post("/toy/talk", data=SPEECH, headers={
@@ -589,3 +591,259 @@ def test_place_from_the_spare_service_when_the_first_is_busy(monkeypatch):
     assert world.place("81.2.69.160") == {"city": "Birmingham", "lat": 52.48, "lon": -1.89,
                                          "timezone": "Europe/London"}
     world.forget()
+
+
+# ---- faces: learning, recognising, forgetting ---------------------------------------------------
+
+import numpy as np  # noqa: E402
+
+from toy import faces, store  # noqa: E402
+
+
+def vector(seed, noise=0.0, other=None):
+    rng = np.random.default_rng(seed)
+    base = rng.normal(size=128)
+
+    if other is not None:
+        base = base + noise * np.random.default_rng(other).normal(size=128)
+
+    return (base / np.linalg.norm(base)).astype(np.float32)
+
+
+@pytest.fixture
+def fresh_faces(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store.forget_all()
+    faces.forget_state()
+    seen.forget()
+    yield
+    store.forget_all()
+    faces.forget_state()
+    seen.forget()
+
+
+@pytest.mark.parametrize("said, wanted", [
+    ("learn my face, I'm Sarah", ("learn", "Sarah")),
+    ("Jarvis, learn my face. My name is Umer.", ("learn", "Umer")),
+    ("my name is mary jane, remember my face", ("learn", "Mary Jane")),
+    ("learn my face", ("learn", None)),
+    ("forget my face", ("forget", None)),
+    ("forget Sarah's face", ("forget", "Sarah")),
+    ("forget Sarah", ("forget", "Sarah")),
+    ("forget everyone", ("forget_all", None)),
+    ("who am I?", ("who_am_i", None)),
+    ("do you recognise me", ("who_am_i", None)),
+    ("who do you know", ("who_known", None)),
+    ("forget it", None),
+    ("what is my face like", None),
+])
+def test_face_requests(said, wanted):
+    assert faces.asked(said) == wanted
+
+
+def test_learn_then_greet_by_name(fresh_faces, monkeypatch):
+    sarah = [vector(1, 0.3, n) for n in range(10, 20)]
+    shots = iter(sarah)
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: next(shots))
+    said, wanted = faces.handle("toy cam", "learn", "Sarah", now=100.0)
+    assert said.startswith("Look at me") and wanted == faces.LEARN_FROM + 2
+    results = [faces.take("toy cam", b"jpg", 18, now=101.0 + n) for n in range(faces.LEARN_FROM)]
+    assert results[:-1] == [None] * (faces.LEARN_FROM - 1)
+    assert results[-1] == "Got it. I'll know you from now on, Sarah."
+    assert store.names("toy cam") == ["Sarah"]
+    faces._greeted.clear()
+    assert faces.take("toy cam", b"jpg", 19, now=200.0) == "Good evening, Sarah."
+    assert faces.take("toy cam", b"jpg", 19, now=210.0) is None, "not greeted again straight away"
+    assert faces.handle("toy cam", "who_am_i", None, now=215.0)[0] == "You're Sarah."
+
+
+def test_each_person_by_their_own_name(fresh_faces, monkeypatch):
+    store.add_faces("toy cam", "Sarah", [vector(1, 0.3, n) for n in range(3)])
+    store.add_faces("toy cam", "Umer", [vector(2, 0.3, n) for n in range(3)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.3, 99))
+    assert faces.take("toy cam", b"jpg", 9, now=10.0) == "Good morning, Umer."
+    assert faces.handle("toy cam", "who_known", None)[0] == "I know Sarah and Umer."
+
+
+def test_a_stranger_is_not_named_or_kept(fresh_faces, monkeypatch):
+    store.add_faces("toy cam", "Sarah", [vector(1)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(50))
+    assert faces.take("toy cam", b"jpg", 12, now=10.0) is None
+    assert len(store.faces("toy cam")) == 1
+    assert faces.handle("toy cam", "who_am_i", None, now=12.0)[0].startswith("I don't know you yet")
+
+
+def test_learning_needs_a_name_and_a_consistent_face(fresh_faces, monkeypatch):
+    assert faces.handle("toy cam", "learn", None)[0].startswith("Tell me your name") and \
+        faces.handle("toy cam", "learn", None)[1] == 0
+    shots = iter([vector(n) for n in range(30, 40)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: next(shots))
+    faces.handle("toy cam", "learn", "Sam", now=0.0)
+    said = [faces.take("toy cam", b"jpg", 12, now=1.0 + n) for n in range(faces.LEARN_FROM)][-1]
+    assert said.startswith("I couldn't get a clear look") and store.names("toy cam") == []
+
+
+def test_learning_times_out_and_says_so(fresh_faces):
+    faces.handle("toy cam", "learn", "Sam", now=0.0)
+    assert faces.learning_timed_out("toy cam", now=10.0) is None
+    assert faces.learning_timed_out("toy cam", now=faces.LEARN_SECONDS + 1).startswith("I couldn't see your face")
+    assert faces.learning_timed_out("toy cam", now=faces.LEARN_SECONDS + 2) is None
+
+
+def test_forgetting(fresh_faces):
+    assert faces.handle("toy cam", "forget", None)[0] == "I don't know anyone's face yet."
+    store.add_faces("toy cam", "Sarah", [vector(1)])
+    assert faces.handle("toy cam", "forget", None)[0] == "I've forgotten Sarah's face."
+    store.add_faces("toy cam", "Sarah", [vector(1)])
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    assert faces.handle("toy cam", "forget", None)[0].startswith("Whose face?")
+    assert faces.handle("toy cam", "forget", "umer")[0] == "I've forgotten Umer's face."
+    assert faces.handle("toy cam", "forget", "Bob")[0] == "I don't know Bob's face."
+    assert faces.handle("toy cam", "forget_all", None)[0] == "I've forgotten every face I knew."
+    assert store.faces("toy cam") == []
+
+
+def test_faces_are_per_toy_and_capped(fresh_faces):
+    store.add_faces("toy cam", "Sarah", [vector(n) for n in range(store.KEEP_PER_PERSON + 5)])
+    store.add_faces("other toy", "Sarah", [vector(1)])
+    assert len(store.faces("toy cam")) == store.KEEP_PER_PERSON and len(store.faces("other toy")) == 1
+
+
+def test_learn_my_face_asks_the_toy_for_faces(client, fresh_faces):
+    response = talk(client, "Jarvis, learn my face, I'm Umer")
+    assert response.headers["X-Jarvis-Faces"] == str(faces.LEARN_FROM + 2)
+    assert response.data.startswith(b"Look at me")
+    assert "X-Jarvis-Faces" not in talk(client, "Jarvis, hello").headers
+
+
+def test_a_known_face_is_greeted_on_the_toy(client, fresh_faces, monkeypatch):
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
+    headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
+    see(client, report("person"))
+    assert client.post("/camera/face", data=b"\xff\xd8x", headers=headers).get_json() == {"ok": True, "say": True}
+    said = announce(client).data.decode()
+    assert said.startswith("I can see someone, sir. Good ") and said.endswith(", Umer.")
+
+
+def test_seen_queue_keeps_order(fresh_faces):
+    seen.queue("t", "One.", now=1.0)
+    seen.queue("t", "Two.", now=2.0)
+    assert seen.take("t", now=3.0) == "One. Two."
+
+
+# ---- where it lives ----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("said, town", [
+    ("I live in Birmingham", "Birmingham"), ("we live in stoke on trent", "Stoke On Trent"),
+    ("you're in Leeds", "Leeds"), ("I live here", None), ("where do I live", None),
+])
+def test_lives_in_asked(said, town):
+    assert world.lives_in_asked(said) == town
+
+
+def test_told_place_wins_and_lasts(fresh_faces, monkeypatch):
+    world.forget()
+    monkeypatch.setattr(world, "_named_place", lambda name: {"city": "Leeds", "lat": 53.8, "lon": -1.55,
+                                                               "timezone": "Europe/London"})
+    assert world.learn_place("toy cam", "Leeds") == "Noted, sir. I'll give you the time and weather for Leeds."
+    monkeypatch.setattr(world.requests, "get", lambda *a, **k: pytest.fail("told, not looked up"))
+    assert world.place("81.2.69.160", "toy cam")["city"] == "Leeds"
+    world.forget()
+
+
+def test_unknown_place_is_asked_for_not_guessed(client, fresh_faces, monkeypatch):
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: {"city": None, "lat": None, "lon": None,
+                                                                  "timezone": None})
+    assert talk(client, "Jarvis, what's the weather like").data.decode() == world.UNKNOWN_PLACE
+
+
+def test_place_not_found_on_the_map(fresh_faces, monkeypatch):
+    monkeypatch.setattr(world, "_named_place", lambda name: {"city": name, "lat": None, "lon": None,
+                                                               "timezone": None})
+    assert world.learn_place("toy cam", "Narnia").startswith("I couldn't find Narnia")
+
+
+def test_the_database_path(monkeypatch):
+    """The SQL is sent as written, with the toy's values as parameters, never pasted into it."""
+    ran = []
+
+    class Cursor:
+        rowcount = 2
+
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=()):
+            ran.append((" ".join(sql.split()), params))
+
+            if sql.startswith("SELECT name, feature"):
+                return Cursor([("Umer", vector(2).tobytes())])
+
+            if sql.startswith("SELECT city"):
+                return Cursor([("Leeds", 53.8, -1.55, "Europe/London")])
+
+            return Cursor([])
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(store, "_ready", False)
+    monkeypatch.setattr(store, "_connect", lambda: Connection())
+    assert store.add_faces("toy cam", "Umer", [vector(2)])
+    assert [name for name, _ in store.faces("toy cam")] == ["Umer"]
+    assert np.allclose(store.faces("toy cam")[0][1], vector(2))
+    assert store.forget_faces("toy cam", "Umer") == 2
+    assert store.set_place("toy cam", {"city": "Leeds", "lat": 53.8, "lon": -1.55, "timezone": "Europe/London"})
+    assert store.get_place("toy cam")["city"] == "Leeds"
+    assert any(sql.startswith("CREATE TABLE IF NOT EXISTS toy_faces") for sql, _ in ran)
+    inserts = [params for sql, params in ran if sql.startswith("INSERT INTO toy_faces")]
+    assert inserts and inserts[0][:2] == ("toy cam", "Umer")
+    assert all("Umer" not in sql and "Leeds" not in sql for sql, _ in ran)
+
+    def broken():
+        raise OSError("down")
+
+    monkeypatch.setattr(store, "_connect", broken)
+    assert store.faces("toy cam") == [] and store.add_faces("toy cam", "Umer", [vector(2)]) is False
+
+
+# ---- "Jarvis, what can you see?" ----------------------------------------------------------------
+
+@pytest.mark.parametrize("said, sight", [
+    ("what can you see", True), ("Jarvis, what do you see?", True), ("who can you see", True),
+    ("is anyone there", True), ("can you see me", True), ("what's in front of you", True),
+    ("what are you looking at", True), ("what can you see in the stars", True), ("see you later", False),
+])
+def test_sight_asked(said, sight):
+    assert seen.sight_asked(said) is sight
+
+
+def test_what_it_can_see(fresh_sight):
+    assert seen.describe("t", now=0.0).startswith("My eyes haven't told me")
+    seen.record("t", report("person", "cup", "cup"), now=10.0)
+    assert seen.describe("t", now=12.0) == "I can see someone and two cups, sir."
+    assert seen.describe("t", name="Umer", now=12.0) == "I can see you, Umer, and two cups."
+    seen.record("t", report("person", "person"), now=20.0)
+    assert seen.describe("t", name="Umer", now=21.0) == "I can see Umer and one other person."
+    seen.record("t", report(), now=30.0)
+    assert seen.describe("t", now=31.0) == "Nothing I recognise right now, sir."
+    seen.record("t", report("cup"), now=40.0)
+    assert seen.describe("t", now=40.0 + seen.FRESH_SECONDS + 1) == "Nothing I recognise right now, sir."
+
+
+def test_what_can_you_see_on_the_toy(client, fresh_sight, monkeypatch):
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("never the model's guess"))
+    see(client, report("person", "bottle"))
+    assert talk(client, "Jarvis, what can you see?").data == b"I can see someone and a bottle, sir."
