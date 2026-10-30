@@ -58,6 +58,10 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - `POST /camera/seen`: what the toy's own detection is sure of (names and boxes, never a picture).
   Answers `{"ok": true, "say": true}` when something has come into view.
 - `POST /toy/announce`: the words for it ("I can see someone, sir."), as PCM, or 204.
+- Someone coming into view is held up to `FACE_WAIT` (5 s) for their face, which the toy sends a
+  moment after its report: a known face makes it one sentence, "I can see you, Umer." (or "Good
+  evening, Umer." when it is time for a greeting); a stranger's face, or the toy's next report with
+  no face, lets "I can see someone, sir." go as it was.
 - `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
   the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
 

@@ -336,7 +336,7 @@ def camera_seen():
 
     # A muted toy says nothing unasked either.
     if _toy(name)["muted"]:
-        seen.take(name)
+        seen.take(name, everything=True)
         due = False
 
     return jsonify({"ok": True, "say": bool(due)}), 200
@@ -374,17 +374,29 @@ def camera_face():
     picture = request.get_data(cache=False)
     hour = world.now(world.place(_toy_address(), name)).hour
 
+    before = faces.last_seen(name)
+
     try:
         said = faces.take(name, picture, hour)
     except Exception as error:   # noqa: BLE001 - a face that cannot be read must not stop the toy
         print(f"[toy-cloud] faces: {type(error).__name__}: {error}", flush=True)
         said = None
 
-    if said and not _toy(name)["muted"]:
-        seen.queue(name, said)
-        return jsonify({"ok": True, "say": True}), 200
+    # Whose face, if it came just after they came into view: one sentence, "I can see you, Umer."
+    after = faces.last_seen(name)
 
-    return jsonify({"ok": True, "say": False}), 200
+    if after is not None and after is not before:
+        if seen.face_arrived(name, after[0], said if after[0] else None) and after[0]:
+            said = None   # the greeting is in it
+
+    if said:
+        seen.queue(name, said)
+
+    if _toy(name)["muted"]:
+        seen.take(name, everything=True)
+        return jsonify({"ok": True, "say": False}), 200
+
+    return jsonify({"ok": True, "say": seen.ready(name)}), 200
 
 
 # Which process this is, in the log: one process must answer the toy, or a face lesson begun in one

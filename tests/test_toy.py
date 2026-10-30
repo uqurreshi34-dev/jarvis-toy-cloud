@@ -327,22 +327,26 @@ def fresh_sight():
     seen.forget()
 
 
-def test_someone_coming_into_view_is_said_once(client, fresh_sight):
+def test_someone_coming_into_view_is_said_once(client, fresh_sight, monkeypatch):
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
     assert see(client, report("person")).get_json() == {"ok": True, "say": True}
     assert announce(client).data == b"I can see someone, sir."
     assert announce(client).status_code == 204
     assert see(client, report("person")).get_json()["say"] is False
 
 
-def test_more_of_them_is_news(client, fresh_sight):
+def test_more_of_them_is_news(client, fresh_sight, monkeypatch):
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
     see(client, report("person", "cup"))
     assert announce(client).data == b"I can see someone and a cup, sir."
     see(client, report("person", "cup", "cup", "cup"))
     assert announce(client).data == b"I can see three cups, sir."
 
 
-def test_back_after_being_away_is_news(fresh_sight):
+def test_back_after_being_away_is_news(fresh_sight, monkeypatch):
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
     assert seen.record("t", report("person"), now=100.0)
+    seen.take("t", now=100.0)
     assert not seen.record("t", report("person"), now=110.0)
     assert seen.record("t", report("person"), now=110.0 + seen.AWAY_SECONDS + 1)
 
@@ -736,10 +740,47 @@ def test_a_known_face_is_greeted_on_the_toy(client, fresh_faces, monkeypatch):
     store.add_faces("toy cam", "Umer", [vector(2)])
     monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
     headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
-    see(client, report("person"))
+    assert see(client, report("person")).get_json()["say"] is False, "held a moment for the face"
     assert client.post("/camera/face", data=b"\xff\xd8x", headers=headers).get_json() == {"ok": True, "say": True}
     said = announce(client).data.decode()
-    assert said.startswith("I can see someone, sir. Good ") and said.endswith(", Umer.")
+    assert said.startswith("Good ") and said.endswith(", Umer.") and "someone" not in said
+
+
+def test_known_face_after_coming_into_view_is_one_sentence_by_name(fresh_faces, fresh_sight):
+    """30 October 2026: 'I can see someone, sir.' and nothing more, when it should have been him."""
+    assert seen.record("t", report("person"), now=100.0) is False
+    assert seen.take("t", now=101.0) is None, "held for the face"
+    assert seen.face_arrived("t", "Umer", None, now=101.5) is True
+    assert seen.take("t", now=101.5) == "I can see you, Umer."
+    seen.record("t", report(), now=110.0)
+    seen.record("t", report("person", "cup"), now=200.0)
+    seen.face_arrived("t", "Umer", "Good evening, Umer.", now=201.0)
+    assert seen.take("t", now=201.0) == "Good evening, Umer. I can see a cup too."
+    seen.record("t", report("person", "person"), now=300.0)   # one more came in
+    seen.face_arrived("t", "Umer", None, now=301.0)
+    assert seen.take("t", now=301.0) == "I can see you, Umer, and one other person."
+
+
+def test_a_stranger_or_no_face_still_gets_someone(fresh_faces, fresh_sight):
+    seen.record("t", report("person"), now=100.0)
+    assert seen.face_arrived("t", None, now=101.0) is True
+    assert seen.take("t", now=101.0) == "I can see someone, sir."
+    seen.record("t", report(), now=140.0)
+    seen.record("t", report("person"), now=200.0)
+    assert seen.ready("t", now=200.0 + seen.FACE_WAIT - 1) is False
+    assert seen.record("t", report("person"), now=200.0 + seen.FACE_WAIT + 1) is True, "the next report lets it go"
+    assert seen.take("t", now=200.0 + seen.FACE_WAIT + 1) == "I can see someone, sir."
+
+
+def test_things_are_not_held_and_a_greeting_without_an_arrival_is_its_own(client, fresh_faces, fresh_sight):
+    assert seen.record("t", report("cup"), now=10.0) is True
+    assert seen.face_arrived("t", "Umer", "Good morning, Umer.", now=11.0) is False
+
+
+def test_a_muted_toy_drops_held_sentences_too(fresh_sight):
+    seen.record("t", report("person"), now=100.0)
+    seen.take("t", now=100.0, everything=True)
+    assert seen.take("t", now=200.0) is None
 
 
 def test_seen_queue_keeps_order(fresh_faces):
@@ -1046,3 +1087,22 @@ def test_a_real_fork_gets_a_free_lock(fresh_faces):
         assert os.waitstatus_to_exitcode(code) == 0
     finally:
         faces._model_lock.release()
+
+
+def test_on_the_toy_already_greeted_is_still_named(client, fresh_faces, fresh_sight, monkeypatch):
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
+    faces._greeted[("toy cam", "Umer")] = time_now()
+    headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
+    see(client, report("person"))
+    assert client.post("/camera/face", data=b"\xff\xd8x", headers=headers).get_json()["say"] is True
+    assert announce(client).data == b"I can see you, Umer."
+
+
+def test_on_the_toy_a_stranger_is_someone_at_once(client, fresh_faces, fresh_sight, monkeypatch):
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(50))
+    headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
+    see(client, report("person"))
+    assert client.post("/camera/face", data=b"\xff\xd8x", headers=headers).get_json()["say"] is True
+    assert announce(client).data == b"I can see someone, sir."

@@ -469,6 +469,12 @@ def handle(toy, what, name, now=None):
     return None, 0
 
 
+def last_seen(toy):
+    """(name or None, when) of the last face recognised or not, as kept: a new one each face."""
+    with _lock:
+        return _last_seen.get(toy)
+
+
 def last_known(toy, now=None, within=120.0):
     """The name of the person the toy last recognised, if that was within [within] seconds."""
     now = time.monotonic() if now is None else now

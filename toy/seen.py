@@ -23,6 +23,11 @@ MAX_LABEL = 40
 # Said sentences wait this long for the toy to fetch them, then are stale.
 PENDING_SECONDS = 60.0
 
+# Someone coming into view is held this long for their face, which the toy sends a moment after its
+# report: "I can see you, Umer." rather than "I can see someone, sir." and then nothing. A stranger's
+# face lets it go at once; with no face at all it goes with the toy's next report (15 s at most).
+FACE_WAIT = 5.0
+
 _NUMBERS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "sheep", "skis": "skis",
@@ -31,7 +36,7 @@ _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "
 
 _lock = threading.Lock()
 _present = {}    # (toy, label) -> {"last": monotonic time last in view, "said": how many said}
-_pending = {}    # toy -> [(sentence, monotonic time), ...], said in order
+_pending = {}    # toy -> [{"said", "at", "until", "counts"}, ...], said in order; held until "until"
 _latest = {}     # toy -> ({label: count}, monotonic time): its last report
 
 # The toy reports every change, and every 15 seconds while anything is in view: a report older
@@ -129,9 +134,10 @@ def record(toy, payload, now=None):
                 due[label] = count
 
         if due:
-            _pending.setdefault(toy, []).append((words(due), now))
+            until = now + FACE_WAIT if "person" in due else now
+            _pending.setdefault(toy, []).append({"said": words(due), "at": now, "until": until, "counts": due})
 
-    return bool(due)
+    return ready(toy, now)
 
 
 def queue(toy, sentence, now=None):
@@ -139,18 +145,71 @@ def queue(toy, sentence, now=None):
     now = time.monotonic() if now is None else now
 
     with _lock:
-        _pending.setdefault(toy, []).append((sentence, now))
+        _pending.setdefault(toy, []).append({"said": sentence, "at": now, "until": now, "counts": None})
 
 
-def take(toy, now=None):
-    """What is waiting for [toy], once, in order; None when nothing is (or it all went stale)."""
+def ready(toy, now=None):
+    """True when something for [toy] can be said now (not held for a face, not stale)."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        return any(item["until"] <= now and now - item["at"] <= PENDING_SECONDS for item in _pending.get(toy, []))
+
+
+def take(toy, now=None, everything=False):
+    """What is ready for [toy], once, in order; None when nothing is. Held sentences stay, unless
+    [everything] (a muted toy drops them all)."""
     now = time.monotonic() if now is None else now
 
     with _lock:
         waiting = _pending.pop(toy, [])
+        held = [] if everything else [item for item in waiting if item["until"] > now]
 
-    fresh = [sentence for sentence, at in waiting if now - at <= PENDING_SECONDS]
+        if held:
+            _pending[toy] = held
+
+    fresh = [item["said"] for item in waiting
+             if item["until"] <= now and now - item["at"] <= PENDING_SECONDS]
     return " ".join(fresh) if fresh else None
+
+
+def face_arrived(toy, name, greeting=None, now=None):
+    """A face came after someone came into view: a held "I can see someone, sir." becomes "I can see
+    you, Umer." ([greeting], when it is time for one, "Good evening, Umer.", in its place), or, for a
+    stranger ([name] None), is let go as it was. True when there was one held to change."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        item = next((item for item in _pending.get(toy, [])
+                     if item["until"] > now and item["counts"] and "person" in item["counts"]), None)
+
+        if item is None:
+            return False
+
+        item["until"] = now
+
+        if not name:
+            return True
+
+        counts = item["counts"]
+        people = counts["person"]
+        others = {label: count for label, count in counts.items() if label != "person"}
+        extras = []
+
+        if people > 1:
+            extras.append(f"{_NUMBERS.get(people - 1, people - 1)} other {'person' if people == 2 else 'people'}")
+
+        if others:
+            extras.append(words(others)[len("I can see "):-len(", sir.")])
+
+        extra = " and ".join(extras)
+
+        if greeting:
+            item["said"] = f"{greeting} I can see {extra} too." if extra else greeting
+        else:
+            item["said"] = f"I can see you, {name}, and {extra}." if extra else f"I can see you, {name}."
+
+    return True
 
 
 _SIGHT = re.compile(
