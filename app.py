@@ -391,9 +391,13 @@ def camera_face():
 # never hears the faces sent to another.
 print(f"[toy-cloud] started: process {os.getpid()}, parent {os.getppid()}", flush=True)
 
-# The face models loaded before the first face arrives, not while it waits.
-if os.getenv("TOY_WARM_UP", "1") != "0":
-    threading.Thread(target=faces.warm_up, daemon=True).start()
+# The face models loaded before the first face arrives, not while it waits: begun by the first request
+# this process answers (Render's own /health check comes within seconds), so always in the process
+# that answers the toy, never in a parent that forks it (faces.warm_up_once).
+@app.before_request
+def _warm_up_faces():
+    if os.getenv("TOY_WARM_UP", "1") != "0":
+        faces.warm_up_once()
 
 
 if __name__ == "__main__":

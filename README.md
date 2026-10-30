@@ -17,6 +17,9 @@ PC JARVIS keeps everything else: reports, trading, files, face names.
   long), and which process answered with its parent: open it in a browser, no laptop needed.
   Every face the toy sends is logged as `faces (process): ...`, learning or recognising, and a face
   waits at most 20 s for busy models instead of hanging the toy.
+  The models are loaded by the first request each process answers, never at import: Render's gunicorn
+  imports the app in a parent process and forks the worker, and a worker forked mid-load inherited
+  a lock nobody could release.
 - `POST /toy/talk`: the same contract as PC JARVIS's `phone.py`. A WAV in (16 kHz mono 16-bit)
   with `X-Jarvis-Token`, `X-Jarvis-Camera` and `X-Jarvis-Toy` (`button` or `sound`); raw PCM out
   (`audio/L16; rate=16000`) with `X-Jarvis-Mood` (`affection` or `normal`), or 204 to stay silent.

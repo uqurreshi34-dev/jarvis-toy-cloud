@@ -1001,3 +1001,48 @@ def test_every_face_is_logged_with_its_process(monkeypatch, fresh_faces, capsys)
     out = capsys.readouterr().out
     assert f"faces ({os.getpid()}): learning Umer: asking the toy for faces" in out
     assert "learning Umer: no single clear face in that picture" in out
+
+
+def test_warm_up_starts_once_in_each_process(monkeypatch, fresh_faces):
+    started = []
+    monkeypatch.setattr(faces, "warm_up", lambda: started.append(os.getpid()))
+    monkeypatch.setitem(faces._warmed_in, "pid", None)
+    assert faces.warm_up_once() is True and faces.warm_up_once() is False
+    faces._warmed_in["pid"] = -1   # as if this were a newly forked worker
+    assert faces.warm_up_once() is True
+
+
+def test_a_forked_worker_never_inherits_a_held_model_lock(monkeypatch, fresh_faces):
+    """Render's gunicorn forked the worker while the parent's warm-up held the lock: every face then
+    timed out ("fetching the fingerprinter for 519 s"). The child starts with fresh locks, no models."""
+    monkeypatch.setattr(faces, "_models", {"finder": object(), "fingerprint": object()})
+    faces._model_lock.acquire()
+    faces._after_fork()
+
+    try:
+        assert faces._model_lock.acquire(timeout=0.1)
+        faces._model_lock.release()
+        assert faces._models == {} and faces.status().startswith("loading for ")
+    finally:
+        faces._after_fork()
+
+
+def test_the_app_never_warms_up_at_import():
+    source = open(os.path.join(os.path.dirname(toy_app.__file__), "app.py"), encoding="ascii").read()
+    assert "faces.warm_up_once()" in source and "target=faces.warm_up" not in source
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is not on Windows")
+def test_a_real_fork_gets_a_free_lock(fresh_faces):
+    faces._model_lock.acquire()
+
+    try:
+        child = os.fork()
+
+        if child == 0:
+            os._exit(0 if faces._model_lock.acquire(timeout=1) else 1)
+
+        _pid, code = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(code) == 0
+    finally:
+        faces._model_lock.release()

@@ -121,6 +121,40 @@ def ready():
     return bool(_models)
 
 
+_start_lock = threading.Lock()
+_warmed_in = {"pid": None}
+
+
+def warm_up_once():
+    """Starts warm_up() in the background, once in each process. Called on a request, never at
+    import: gunicorn with --preload imports the app in its parent process and then forks the worker,
+    and a worker forked while the parent's warm-up held the models' lock inherits that lock held by
+    a thread it doesn't have -- every face then waits forever ("fetching the fingerprinter for 519 s")."""
+    with _start_lock:
+        if _warmed_in["pid"] == os.getpid():
+            return False
+
+        _warmed_in["pid"] = os.getpid()
+
+    threading.Thread(target=warm_up, daemon=True).start()
+    return True
+
+
+def _after_fork():
+    """In a new child process: fresh locks and no models, whatever the parent was doing."""
+    global _lock, _model_lock, _start_lock
+    _lock = threading.Lock()
+    _model_lock = threading.Lock()
+    _start_lock = threading.Lock()
+    _models.clear()
+    _warmed_in["pid"] = None
+    _step("loading")
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+
+
 def warm_up():
     """Loads the models; says how it went in the log and in status()."""
     started = time.monotonic()
