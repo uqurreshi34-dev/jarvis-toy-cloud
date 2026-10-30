@@ -313,6 +313,10 @@ def toy_talk():
     return _pcm_response(said, mood, switch, wanted)
 
 
+# A known face this recent means a person coming into view is still them.
+KNOWN_A_MOMENT_AGO = 60.0
+
+
 @app.post("/camera/seen")
 def camera_seen():
     if not _authorised():
@@ -326,6 +330,10 @@ def camera_seen():
 
     if due is None:
         return jsonify({"error": "not a report"}), 400
+
+    # Someone it knew a moment ago: still them, moving about, not "someone".
+    if faces.last_known(name, within=KNOWN_A_MOMENT_AGO):
+        seen.drop_arrival(name)
 
     # A face lesson that ran out of time says so, once.
     late = faces.learning_timed_out(name)

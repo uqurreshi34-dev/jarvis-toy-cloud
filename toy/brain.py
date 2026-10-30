@@ -4,9 +4,10 @@ LLM_PROVIDER picks who is asked first; the others follow in the usual order. A p
 key is skipped, and one that fails hands the question to the next, so a single outage is not
 silence. The personality is JARVIS's, cut to what suits a toy: short, spoken, kind.
 
-Live questions (today's news, scores, tables, prices): searched first when they plainly are
-(search.live_asked); otherwise the model is asked, and may answer just SEARCH, when the question needs
-what it cannot know -- then it is searched and asked again with what was found. It is always told
+Live questions (today's news, any league's table, prices, who holds a job now): the model itself
+decides first, with no list of words or leagues kept here, whether a right answer needs information
+that changes or is newer than its training (LIVE) or not (KNOWN). LIVE is searched and answered from
+what was found; KNOWN is answered, and the model may still answer just SEARCH. It is always told
 today's date and the town the toy is in, so "tomorrow", "this year" and "here" mean something.
 """
 
@@ -58,6 +59,16 @@ PERSONA = (
     "are answered separately, so if asked, say you'll have a look. You do not write reports, give trading advice or control the computer; "
     "for those, say the desk JARVIS on the PC handles that."
 )
+
+# First, the model's own judgement of whether the question needs a search.
+DECIDE = (
+    "You decide one thing about the user's question: does a correct answer depend on information "
+    "that changes over time or may be newer than your training -- sport tables, positions, results or "
+    "fixtures in any league or competition, news, events, prices, weather, who holds a position now? "
+    "Reply with exactly the single word LIVE if so, or KNOWN if a correct answer never changes "
+    "(facts, definitions, history, maths, jokes, advice). Nothing else."
+)
+LIVE = "LIVE"
 
 # Without results: the model may ask for a search rather than guess.
 MAY_SEARCH = (
@@ -173,11 +184,17 @@ def answer(question, today="", city=""):
     sorry = "I can't reach my thinking just now, sir. Try me again in a moment."
     context = _context(today, city)
 
-    if search.live_asked(question):
+    decided = _first(question, DECIDE + context)
+    live = bool(decided) and decided.strip(" .").upper().startswith(LIVE)
+    print(f"[toy-cloud] {'live, searching' if live else 'known'}: {question!r}", flush=True)
+
+    if live:
         found = search.search(f"{question} ({today})" if today else question)
 
         if found:
             return _with_results(question, found, today, city) or sorry
+
+        return "I couldn't look that up just now, sir. Try me again in a moment."
 
     said = _first(question, PERSONA + context + MAY_SEARCH)
 

@@ -282,7 +282,7 @@ def take(toy, jpeg, hour, now=None):
         with _lock:
             _learning.pop(toy, None)
 
-        return _finish(toy, lesson)
+        return _finish(toy, lesson, now)
 
     if feature is None:
         _say("no single clear face in that picture")
@@ -313,7 +313,7 @@ def back_words(name):
     return f"I can see you, {name}."
 
 
-def _finish(toy, lesson):
+def _finish(toy, lesson, now):
     features = lesson["features"]
     name = lesson["name"]
     kept = []
@@ -333,8 +333,11 @@ def _finish(toy, lesson):
     if not store.add_faces(toy, name, kept):
         return f"I saw you, {name}, but couldn't save it just now. Try me again in a moment."
 
+    # Just seen, by name: "who am I" knows them at once, and they are not greeted straight after.
     with _lock:
-        _greeted[(toy, name)] = time.monotonic()
+        _greeted[(toy, name)] = now
+        _seen_at[(toy, name)] = now
+        _last_seen[toy] = (name, now)
 
     return f"Got it. I'll know you from now on, {name}."
 

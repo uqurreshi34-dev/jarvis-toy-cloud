@@ -173,6 +173,22 @@ def take(toy, now=None, everything=False):
     return " ".join(fresh) if fresh else None
 
 
+def drop_arrival(toy, now=None):
+    """Lets go of a held "I can see someone, sir." about one person and nothing else: the cloud saw a
+    face it knows a moment ago, so it is them moving about (turning to leave, back to the camera)."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        waiting = _pending.get(toy, [])
+        kept = [item for item in waiting if not (item["until"] > now and item["counts"] == {"person": 1})]
+        dropped = len(kept) != len(waiting)
+
+        if waiting:
+            _pending[toy] = kept
+
+    return dropped
+
+
 def face_arrived(toy, name, greeting=None, now=None):
     """A face came after someone came into view: a held "I can see someone, sir." becomes "I can see
     you, Umer." ([greeting], when it is time for one, "Good evening, Umer.", in its place), or, for a

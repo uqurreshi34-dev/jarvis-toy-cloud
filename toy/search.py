@@ -1,13 +1,12 @@
 """Live answers: a web search (Tavily, as PC JARVIS's research uses), for what a model cannot know --
 today's news, scores, league tables, prices, who holds a job now.
 
-Asked when the question plainly needs it (live_asked), or when the model, given the question first,
-says it needs it (brain.SEARCH). The results' short texts go to the model with the question, and it
+Asked when the model says the question needs it (brain.LIVE, or brain.SEARCH): no list of words
+is kept here. The results' short texts go to the model with the question, and it
 answers from them in one to three spoken sentences.
 """
 
 import os
-import re
 import threading
 import time
 
@@ -23,21 +22,6 @@ REST_SECONDS = 600.0
 
 _lock = threading.Lock()
 _resting_until = 0.0
-
-# Plainly about now: news, results, tables, prices, who is something today.
-_LIVE = re.compile(
-    r"\b(?:today|tonight|yesterday|this\s+(?:week|weekend|month|year|season|morning|evening)|right\s+now"
-    r"|currently|current|latest|recent|recently|at\s+the\s+moment|so\s+far|live|news|headlines"
-    r"|score|scores|result|results|fixture|fixtures|table|standings|top\s+of\s+the|bottom\s+of\s+the"
-    r"|who\s+won|who\s+is\s+winning|winning|price\s+of|how\s+much\s+is|stock|share\s+price|bitcoin"
-    r"|exchange\s+rate|election|prime\s+minister|president|premier\s+league|champions\s+league|weather)\b"
-)
-
-
-def live_asked(text):
-    """True when [text] plainly asks about now."""
-    words = " ".join(re.sub(r"[^\w\s]", " ", str(text or "").casefold().replace("'", "")).split())
-    return bool(_LIVE.search(words))
 
 
 def search(query):

@@ -74,8 +74,10 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - "What's the weather", "will it rain tomorrow": Open-Meteo, free, where the toy is.
 - Where the toy is: a guess from its internet connection (ipapi.co, or ipwho.is), kept a day.
   `TOY_PLACE` ("Leeds, GB") and `TOY_TIMEZONE` ("Europe/London"), when set, win.
-- Live questions ("who's top of the Premier League"): a Tavily search first when the question plainly
-  needs one, or when the model says it does (it answers just SEARCH); then answered from the results.
+- Every other question goes to the model (Groq, then Gemini, then DeepSeek). It first decides for
+  itself, with no list of words or leagues kept here, whether a right answer needs live information
+  (any league's table, news, prices, who holds a job now): if so, a Tavily search, and the answer
+  comes from the results. Each decision is logged ("live, searching" or "known").
   The model is always told today's date and the town.
 
 ## Faces and memory
@@ -86,6 +88,7 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   by name, once in ten minutes. A stranger's face is compared and let go, never kept.
 - Said casually too: "learned my face" (as Whisper often hears it), "can you remember me, I'm Sarah",
   "I'm Sarah, learn my face please", "remember my face, Sarah".
+- Someone it knew in the last minute coming into view again is still them: no "I can see someone".
 - "Who am I", "who do you know", "forget my face", "forget Sarah", "forget everyone".
 - "Jarvis, I live in Leeds": kept, and used for the time and the weather before any guess.
 - "What can you see", "is anyone there": from the toy's last report, and who, if it knows them.

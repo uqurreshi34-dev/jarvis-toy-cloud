@@ -161,7 +161,8 @@ def test_brain_falls_through_to_the_next_provider(monkeypatch):
 
     monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setattr(brain, "_ask", ask)
-    assert brain.answer("hi") == "Hello, sir." and asked == ["groq", "gemini"]
+    assert brain.answer("hi") == "Hello, sir." and asked == ["groq", "gemini", "groq", "gemini"], \
+        "the decision, then the answer: each falls through to the next provider"
 
 
 def test_brain_apologises_when_all_fail(monkeypatch):
@@ -522,47 +523,58 @@ def test_the_toys_address_is_its_forwarded_one(client, monkeypatch):
     assert seen_ips == ["81.2.69.160"]
 
 
-@pytest.mark.parametrize("said, live", [
-    ("who is top of the premier league", True), ("what's the latest news", True),
-    ("who won the match yesterday", True), ("what's the price of bitcoin", True),
-    ("what is the capital of France", False), ("tell me a joke", False),
-])
-def test_live_asked(said, live):
-    assert search.live_asked(said) is live
-
-
-def test_live_question_is_searched_then_answered(monkeypatch):
-    asked = []
-    monkeypatch.setattr(search, "search", lambda query: asked.append(query) or [("Table", "Arsenal top on 25")])
-    monkeypatch.setattr(brain, "_first", lambda question, system: "Arsenal, sir." if "Arsenal top" in system else None)
-    said = brain.answer("who is top of the premier league", today="Friday 30 October 2026", city="Birmingham")
-    assert said == "Arsenal, sir." and asked == ["who is top of the premier league (Friday 30 October 2026)"]
-
-
-def test_model_may_ask_for_a_search(monkeypatch):
-    systems = []
+def decider(answers, systems=None):
+    """A stand-in model: LIVE or KNOWN when asked to decide, then each of [answers] in turn."""
+    answers = list(answers)
 
     def first(question, system):
-        systems.append(system)
-        return "SEARCH" if len(systems) == 1 else "Mr Smith, sir."
+        if systems is not None:
+            systems.append(system)
 
-    monkeypatch.setattr(brain, "_first", first)
+        if system.startswith(brain.DECIDE):
+            return answers.pop(0)
+
+        return answers.pop(0) if answers else None
+
+    return first
+
+
+def test_the_model_decides_what_is_live_with_no_list_of_words(monkeypatch):
+    """30 October 2026: 'who is in first place in the Bundesliga' was answered 'I couldn't get that
+    information': no league was on a list, and the model guessed instead of asking for a search."""
+    asked = []
+    systems = []
+    monkeypatch.setattr(search, "search", lambda query: asked.append(query) or [("Table", "Bayern top on 25")])
+    monkeypatch.setattr(brain, "_first", decider(["LIVE", "Bayern Munich, sir."], systems))
+    said = brain.answer("who is in first place in the Bundesliga", today="Friday 30 October 2026", city="Birmingham")
+    assert said == "Bayern Munich, sir." and asked == ["who is in first place in the Bundesliga (Friday 30 October 2026)"]
+    assert "Today is Friday 30 October 2026." in systems[0] and "Bayern top on 25" in systems[1]
+
+
+def test_no_list_of_live_words_is_kept():
+    assert not hasattr(search, "live_asked") and not hasattr(search, "_LIVE")
+
+
+def test_model_may_still_ask_for_a_search(monkeypatch):
+    systems = []
+    monkeypatch.setattr(brain, "_first", decider(["KNOWN", "SEARCH", "Mr Smith, sir."], systems))
     monkeypatch.setattr(search, "search", lambda query: [("News", "Mr Smith became mayor")])
     assert brain.answer("who is the mayor of the west midlands", today="Friday 30 October 2026") == "Mr Smith, sir."
-    assert brain.MAY_SEARCH in systems[0] and "Today is Friday 30 October 2026." in systems[0]
-    assert "Mr Smith became mayor" in systems[1] and brain.MAY_SEARCH not in systems[1]
+    assert brain.MAY_SEARCH in systems[1] and "Today is Friday 30 October 2026." in systems[1]
+    assert "Mr Smith became mayor" in systems[2] and brain.MAY_SEARCH not in systems[2]
 
 
-def test_no_search_needed_is_one_call(monkeypatch):
-    calls = []
-    monkeypatch.setattr(brain, "_first", lambda question, system: calls.append(1) or "Paris, sir.")
+def test_known_is_answered_without_a_search(monkeypatch):
+    monkeypatch.setattr(brain, "_first", decider(["KNOWN", "Paris, sir."]))
     monkeypatch.setattr(search, "search", lambda query: pytest.fail("no search"))
-    assert brain.answer("what is the capital of France") == "Paris, sir." and calls == [1]
+    assert brain.answer("what is the capital of France") == "Paris, sir."
 
 
 def test_search_unavailable_is_said(monkeypatch):
-    monkeypatch.setattr(brain, "_first", lambda question, system: "SEARCH")
+    monkeypatch.setattr(brain, "_first", decider(["LIVE"]))
     monkeypatch.setattr(search, "search", lambda query: [])
+    assert brain.answer("who is the mayor").startswith("I couldn't look that up")
+    monkeypatch.setattr(brain, "_first", decider(["KNOWN", "SEARCH"]))
     assert brain.answer("who is the mayor").startswith("I couldn't look that up")
 
 
@@ -1127,3 +1139,27 @@ def test_back_words_are_not_a_greeting_to_merge(client, fresh_faces, fresh_sight
     see(client, report("person", "cup"))
     client.post("/camera/face", data=b"\xff\xd8x", headers=headers)
     assert announce(client).data == b"I can see you, Umer, and a cup."
+
+
+def test_who_am_i_straight_after_learning(fresh_faces, monkeypatch):
+    shots = iter([vector(3, 0.2, n) for n in range(10)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: next(shots))
+    faces.handle("toy cam", "learn", "Umar", now=100.0)
+    [faces.take("toy cam", b"jpg", 21, now=101.0 + n) for n in range(faces.LEARN_FROM)]
+    assert faces.handle("toy cam", "who_am_i", None, now=110.0)[0] == "You're Umar."
+
+
+def test_someone_known_a_moment_ago_is_not_someone(client, fresh_faces, fresh_sight, monkeypatch):
+    """30 October 2026: he turned to leave, back to the camera, and heard 'I can see someone, sir.'"""
+    faces._last_seen["toy cam"] = ("Umar", time_now())
+    assert see(client, report("person")).get_json()["say"] is False
+    assert seen.take("toy cam", now=time_now() + seen.FACE_WAIT + 1) is None, "never said, even after the wait"
+
+
+def test_a_held_arrival_is_dropped_only_when_it_is_one_person(fresh_sight):
+    seen.record("t", report("person"), now=100.0)
+    assert seen.drop_arrival("t", now=101.0) is True
+    assert seen.take("t", now=200.0) is None
+    seen.record("t", report(), now=300.0)
+    seen.record("t", report("person", "person"), now=400.0)
+    assert seen.drop_arrival("t", now=401.0) is False, "a second person is still news"
