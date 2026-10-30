@@ -79,8 +79,17 @@ MAY_SEARCH = (
 
 # With results: answer from them.
 FROM_RESULTS = (
-    " Below are web search results gathered just now. Answer from them, briefly and plainly; if they do "
-    "not answer the question, say you couldn't find that out just now. Never mention searching or results."
+    " Below are web search results gathered just now. Answer from them, briefly and plainly, giving the "
+    "most recent figure they show. If they truly do not answer the question, reply with exactly NOT FOUND "
+    "and nothing else. Never mention searching or results."
+)
+NOT_FOUND = "NOT FOUND"
+
+# The search words: the model's own, for now (30 October 2026: the question as asked, with the date
+# stuck on, brought back pages that did not say who leads the Bundesliga).
+QUERY = (
+    "Write the one web search query most likely to find the up-to-date answer to the user's question. "
+    "Use the current season or year where it helps. Reply with only the query, no quotes."
 )
 
 SEARCH = "SEARCH"
@@ -178,6 +187,35 @@ def _with_results(question, found, today, city):
     return _first(question, PERSONA + _context(today, city) + FROM_RESULTS + "\n\nResults:\n" + shown)
 
 
+def _searched(question, today, city):
+    """[question] answered from a search with the model's own words: a thorough search first, then
+    the past week's news if that did not answer it. None when the model could not be reached."""
+    context = _context(today, city)
+    query = " ".join((_first(question, QUERY + context) or question).strip(" \"'").split())[:200] or question
+    any_found = False
+
+    for fresh in (False, True):
+        found = search.search(query, fresh=fresh)
+        print(f"[toy-cloud] search{' (news)' if fresh else ''} {query!r}: {len(found)} found", flush=True)
+
+        if not found:
+            continue
+
+        any_found = True
+        said = _with_results(question, found, today, city)
+
+        if said is None:
+            return None
+
+        if said.strip(" .").upper() != NOT_FOUND:
+            return said
+
+    if not any_found:
+        return "I couldn't look that up just now, sir. Try me again in a moment."
+
+    return "I couldn't find that out just now, sir."
+
+
 def answer(question, today="", city=""):
     """The toy's answer to [question] -- searched first when it needs live information -- or a short
     apology when every provider failed. [today] ("Friday 30 October 2026") and [city] are told to it."""
@@ -189,12 +227,7 @@ def answer(question, today="", city=""):
     print(f"[toy-cloud] {'live, searching' if live else 'known'}: {question!r}", flush=True)
 
     if live:
-        found = search.search(f"{question} ({today})" if today else question)
-
-        if found:
-            return _with_results(question, found, today, city) or sorry
-
-        return "I couldn't look that up just now, sir. Try me again in a moment."
+        return _searched(question, today, city) or sorry
 
     said = _first(question, PERSONA + context + MAY_SEARCH)
 
@@ -204,9 +237,4 @@ def answer(question, today="", city=""):
     if said.strip(" .").upper() != SEARCH:
         return said
 
-    found = search.search(f"{question} ({today})" if today else question)
-
-    if not found:
-        return "I couldn't look that up just now, sir. Try me again in a moment."
-
-    return _with_results(question, found, today, city) or sorry
+    return _searched(question, today, city) or sorry

@@ -523,16 +523,17 @@ def test_the_toys_address_is_its_forwarded_one(client, monkeypatch):
     assert seen_ips == ["81.2.69.160"]
 
 
-def decider(answers, systems=None):
-    """A stand-in model: LIVE or KNOWN when asked to decide, then each of [answers] in turn."""
+def decider(answers, systems=None, query="Bundesliga table 2026-27"):
+    """A stand-in model: LIVE or KNOWN when asked to decide, [query] when asked for search words,
+    then each of [answers] in turn."""
     answers = list(answers)
 
     def first(question, system):
         if systems is not None:
             systems.append(system)
 
-        if system.startswith(brain.DECIDE):
-            return answers.pop(0)
+        if system.startswith(brain.QUERY):
+            return query
 
         return answers.pop(0) if answers else None
 
@@ -544,11 +545,25 @@ def test_the_model_decides_what_is_live_with_no_list_of_words(monkeypatch):
     information': no league was on a list, and the model guessed instead of asking for a search."""
     asked = []
     systems = []
-    monkeypatch.setattr(search, "search", lambda query: asked.append(query) or [("Table", "Bayern top on 25")])
+    monkeypatch.setattr(search, "search", lambda query, fresh=False: asked.append((query, fresh)) or
+                        [("Table", "Bayern top on 25")])
     monkeypatch.setattr(brain, "_first", decider(["LIVE", "Bayern Munich, sir."], systems))
     said = brain.answer("who is in first place in the Bundesliga", today="Friday 30 October 2026", city="Birmingham")
-    assert said == "Bayern Munich, sir." and asked == ["who is in first place in the Bundesliga (Friday 30 October 2026)"]
-    assert "Today is Friday 30 October 2026." in systems[0] and "Bayern top on 25" in systems[1]
+    assert said == "Bayern Munich, sir." and asked == [("Bundesliga table 2026-27", False)]
+    assert "Today is Friday 30 October 2026." in systems[0] and "Bayern top on 25" in systems[-1]
+
+
+def test_the_model_writes_the_search_words_and_news_is_tried_when_they_miss(monkeypatch):
+    """30 October 2026: searched three times for who leads the Bundesliga, and each time 'I couldn't find
+    a definitive answer': the question itself, date stuck on, found pages that did not say."""
+    asked = []
+    monkeypatch.setattr(search, "search", lambda query, fresh=False: asked.append((query, fresh)) or
+                        [("Page", "news" if fresh else "old")])
+    monkeypatch.setattr(brain, "_first", decider(["LIVE", "NOT FOUND", "Bayern Munich lead, sir."]))
+    assert brain.answer("who is top of the Bundesliga", today="Friday 30 October 2026") == "Bayern Munich lead, sir."
+    assert asked == [("Bundesliga table 2026-27", False), ("Bundesliga table 2026-27", True)]
+    monkeypatch.setattr(brain, "_first", decider(["LIVE", "NOT FOUND", "NOT FOUND"]))
+    assert brain.answer("who is top of the Bundesliga") == "I couldn't find that out just now, sir."
 
 
 def test_no_list_of_live_words_is_kept():
@@ -558,21 +573,21 @@ def test_no_list_of_live_words_is_kept():
 def test_model_may_still_ask_for_a_search(monkeypatch):
     systems = []
     monkeypatch.setattr(brain, "_first", decider(["KNOWN", "SEARCH", "Mr Smith, sir."], systems))
-    monkeypatch.setattr(search, "search", lambda query: [("News", "Mr Smith became mayor")])
+    monkeypatch.setattr(search, "search", lambda query, fresh=False: [("News", "Mr Smith became mayor")])
     assert brain.answer("who is the mayor of the west midlands", today="Friday 30 October 2026") == "Mr Smith, sir."
     assert brain.MAY_SEARCH in systems[1] and "Today is Friday 30 October 2026." in systems[1]
-    assert "Mr Smith became mayor" in systems[2] and brain.MAY_SEARCH not in systems[2]
+    assert "Mr Smith became mayor" in systems[-1] and brain.MAY_SEARCH not in systems[-1]
 
 
 def test_known_is_answered_without_a_search(monkeypatch):
     monkeypatch.setattr(brain, "_first", decider(["KNOWN", "Paris, sir."]))
-    monkeypatch.setattr(search, "search", lambda query: pytest.fail("no search"))
+    monkeypatch.setattr(search, "search", lambda query, fresh=False: pytest.fail("no search"))
     assert brain.answer("what is the capital of France") == "Paris, sir."
 
 
 def test_search_unavailable_is_said(monkeypatch):
     monkeypatch.setattr(brain, "_first", decider(["LIVE"]))
-    monkeypatch.setattr(search, "search", lambda query: [])
+    monkeypatch.setattr(search, "search", lambda query, fresh=False: [])
     assert brain.answer("who is the mayor").startswith("I couldn't look that up")
     monkeypatch.setattr(brain, "_first", decider(["KNOWN", "SEARCH"]))
     assert brain.answer("who is the mayor").startswith("I couldn't look that up")
@@ -590,6 +605,9 @@ def test_tavily_request_and_rest(monkeypatch):
     monkeypatch.setattr(search.requests, "post", post)
     assert search.search("top of the league") == [("Summary", "Arsenal lead."), ("Table", "Arsenal 25 pts")]
     assert sent["headers"]["Authorization"] == "Bearer tv" and sent["json"]["include_answer"] is True
+    assert sent["json"]["search_depth"] == "advanced" and "topic" not in sent["json"]
+    search.search("top of the league", fresh=True)
+    assert sent["json"]["topic"] == "news" and sent["json"]["time_range"] == "week"
     monkeypatch.setattr(search.requests, "post", lambda *a, **k: Answer({}, status=432))
     assert search.search("x") == []
     monkeypatch.setattr(search.requests, "post", lambda *a, **k: pytest.fail("resting"))

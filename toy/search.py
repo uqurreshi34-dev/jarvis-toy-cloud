@@ -24,8 +24,9 @@ _lock = threading.Lock()
 _resting_until = 0.0
 
 
-def search(query):
-    """[(title, text), ...] for [query], or [] when Tavily is not set up, resting, or failed."""
+def search(query, fresh=False):
+    """[(title, text), ...] for [query], or [] when Tavily is not set up, resting, or failed. A thorough
+    search ("advanced": fuller passages from each page); [fresh] keeps to the past week's news."""
     global _resting_until
 
     key = (os.getenv("TAVILY_API_KEY") or "").strip()
@@ -37,13 +38,18 @@ def search(query):
         return []
 
     try:
-        response = requests.post(TAVILY_URL, timeout=TIMEOUT, headers={"Authorization": f"Bearer {key}"}, json={
+        body = {
             "query": str(query).strip(),
-            "search_depth": "basic",
+            "search_depth": "advanced",
             "max_results": MAX_RESULTS,
             "include_answer": True,
             "safe_search": True,
-        })
+        }
+
+        if fresh:
+            body.update(topic="news", time_range="week")
+
+        response = requests.post(TAVILY_URL, timeout=TIMEOUT, headers={"Authorization": f"Bearer {key}"}, json=body)
     except requests.RequestException as error:
         print(f"[toy-cloud] search failed: {error}", flush=True)
         return []

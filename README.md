@@ -79,7 +79,10 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - Every other question goes to the model (Groq, then Gemini, then DeepSeek). It first decides for
   itself, with no list of words or leagues kept here, whether a right answer needs live information
   (any league's table, news, prices, who holds a job now): if so, a Tavily search, and the answer
-  comes from the results. Each decision is logged ("live, searching" or "known").
+  comes from the results. Each decision is logged ("live, searching" or "known"). The model writes
+  its own search words (with the season or year), Tavily searches thoroughly ("advanced"), and when
+  those pages do not answer it, the past week's news is searched once more; each search is logged
+  with how many pages it found.
   The model is always told today's date and the town.
 
 ## Faces and memory
