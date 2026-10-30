@@ -27,6 +27,7 @@ IP_URL_SPARE = "https://ipwho.is/{ip}"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 TIMEOUT = (4, 8)
+WEATHER_TIMEOUT = (6, 15)
 PLACE_KEEP_SECONDS = 24 * 3600
 
 DEFAULT_TIMEZONE = "Europe/London"
@@ -241,19 +242,35 @@ def weather_words(when, where):
     if not where or where.get("lat") is None or where.get("lon") is None:
         return None
 
-    try:
-        response = requests.get(WEATHER_URL, timeout=TIMEOUT, params={
-            "latitude": where["lat"], "longitude": where["lon"], "timezone": "auto", "forecast_days": 2,
-            "current": "temperature_2m,weather_code",
-            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-        })
-        data = response.json() if response.status_code == 200 else None
-    except (requests.RequestException, ValueError) as error:
-        print(f"[toy-cloud] weather: Open-Meteo failed ({type(error).__name__})", flush=True)
-        data = None
+    data = None
+
+    # Twice: a slow first answer from a sleepy free server is the commonest failure.
+    for attempt in (1, 2):
+        try:
+            response = requests.get(WEATHER_URL, timeout=WEATHER_TIMEOUT, params={
+                "latitude": round(float(where["lat"]), 4), "longitude": round(float(where["lon"]), 4),
+                "timezone": "auto", "forecast_days": 2,
+                "current": "temperature_2m,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            })
+        except (requests.RequestException, ValueError, TypeError) as error:
+            print(f"[toy-cloud] weather: Open-Meteo try {attempt} failed ({type(error).__name__}: {error})", flush=True)
+            continue
+
+        if response.status_code != 200:
+            print(f"[toy-cloud] weather: Open-Meteo answered {response.status_code}: {response.text[:200]}",
+                  flush=True)
+            continue
+
+        try:
+            data = response.json()
+        except ValueError:
+            print("[toy-cloud] weather: Open-Meteo's answer was not JSON", flush=True)
+            continue
+
+        break
 
     if not data:
-        print("[toy-cloud] weather: no forecast came back", flush=True)
         return None
 
     daily = data.get("daily") or {}
@@ -264,7 +281,9 @@ def weather_words(when, where):
         low = round(daily["temperature_2m_min"][day])
         code = daily["weather_code"][day]
         rain = (daily.get("precipitation_probability_max") or [None, None])[day]
-    except (KeyError, IndexError, TypeError):
+    except (KeyError, IndexError, TypeError) as error:
+        print(f"[toy-cloud] weather: the forecast was not as expected ({type(error).__name__}: {error}; "
+              f"keys {sorted(daily)})", flush=True)
         return None
 
     city = where.get("city") or "here"

@@ -185,6 +185,14 @@ def get_place(toy):
     return {"city": row[0], "lat": row[1], "lon": row[2], "timezone": row[3]}
 
 
+def kind():
+    """Where memory is kept, for /health: "database", "database unreachable" or "memory only"."""
+    if not _url():
+        return "memory only"
+
+    return "database" if _run(lambda connection: connection.execute("SELECT 1").fetchone()) else "database unreachable"
+
+
 def forget_all():
     """Everything in memory (for tests)."""
     with _lock:

@@ -30,7 +30,7 @@ _LIVE = re.compile(
     r"|currently|current|latest|recent|recently|at\s+the\s+moment|so\s+far|live|news|headlines"
     r"|score|scores|result|results|fixture|fixtures|table|standings|top\s+of\s+the|bottom\s+of\s+the"
     r"|who\s+won|who\s+is\s+winning|winning|price\s+of|how\s+much\s+is|stock|share\s+price|bitcoin"
-    r"|exchange\s+rate|election|prime\s+minister|president|premier\s+league|champions\s+league)\b"
+    r"|exchange\s+rate|election|prime\s+minister|president|premier\s+league|champions\s+league|weather)\b"
 )
 
 

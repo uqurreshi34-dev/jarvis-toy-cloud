@@ -442,6 +442,10 @@ class Answer:
     def json(self):
         return self._data
 
+    @property
+    def text(self):
+        return str(self._data)
+
 
 def test_weather_words(monkeypatch):
     sent = {}
@@ -847,3 +851,67 @@ def test_what_can_you_see_on_the_toy(client, fresh_sight, monkeypatch):
     monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("never the model's guess"))
     see(client, report("person", "bottle"))
     assert talk(client, "Jarvis, what can you see?").data == b"I can see someone and a bottle, sir."
+
+
+# ---- after the first try on the toy (30 October 2026) --------------------------------------------
+
+def test_what_can_you_see_never_waits_for_the_face_models(fresh_faces, fresh_sight):
+    """'What can you see' hung on the toy: the face models were loading under the lock it needed."""
+    import threading as _threading
+
+    seen.record("t", report("person"), now=time_now())
+    faces._model_lock.acquire()
+
+    try:
+        answered = []
+        worker = _threading.Thread(target=lambda: answered.append(seen.describe("t", faces.last_known("t"))))
+        worker.start()
+        worker.join(timeout=2)
+        assert answered == ["I can see someone, sir."]
+    finally:
+        faces._model_lock.release()
+
+
+def time_now():
+    import time as _time
+
+    return _time.monotonic()
+
+
+def test_weather_service_down_is_looked_up_instead(client, fresh_faces, monkeypatch):
+    asked = []
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: {"city": "Birmingham", "lat": 52.48, "lon": -1.89,
+                                                                  "timezone": "Europe/London"})
+    monkeypatch.setattr(world, "weather_words", lambda when, where: None)
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: asked.append((text, context)) or "Wet, sir.")
+    assert talk(client, "Jarvis, what's the weather like").data == b"Wet, sir."
+    assert "weather in Birmingham today" in asked[0][0] and asked[0][1]["city"] == "Birmingham"
+
+
+def test_weather_is_tried_twice_and_says_why(monkeypatch, capsys):
+    calls = []
+
+    def get(url, timeout=None, params=None, headers=None):
+        calls.append(params)
+
+        if len(calls) == 1:
+            raise world.requests.Timeout("slow")
+
+        return Answer({"daily": {"weather_code": [3, 3], "temperature_2m_max": [10, 11],
+                                 "temperature_2m_min": [5, 6], "precipitation_probability_max": [0, 0]}})
+
+    monkeypatch.setattr(world.requests, "get", get)
+    said = world.weather_words("tomorrow", {"city": "Birmingham", "lat": "52.48", "lon": -1.89})
+    assert said == "Tomorrow in Birmingham, sir, expect overcast skies: a high of 11 and a low of 6."
+    assert len(calls) == 2 and calls[1]["latitude"] == 52.48
+    assert "try 1 failed" in capsys.readouterr().out
+    monkeypatch.setattr(world.requests, "get", lambda *a, **k: Answer({"error": True, "reason": "bad"}, status=400))
+    assert world.weather_words("today", {"city": "B", "lat": 1, "lon": 2}) is None
+    assert "answered 400" in capsys.readouterr().out
+
+
+def test_health_detail_for_a_browser(client, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert client.get("/health").get_json() == {"ok": True}
+    detail = client.get("/health?detail=1").get_json()
+    assert detail["memory"] == "memory only" and detail["faces"] in ("ready", "loading")

@@ -27,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from toy import brain, faces, hearing, modes, seen, social, voice, wake, world
+from toy import brain, faces, hearing, modes, seen, social, store, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -146,7 +146,11 @@ def answer_words(text, ip=None, toy=None):
         if said:
             return said, ""
 
-        return "I couldn't get the weather just now, sir. Try me again in a moment.", ""
+        # The forecast service failed: the weather is still a live question, so it is looked up.
+        moment = world.now(where)
+        today = f"{moment.strftime('%A')} {moment.day} {moment.strftime('%B %Y')}, {moment.strftime('%H:%M')}"
+        city = where.get("city") or ""
+        return brain.answer(f"What is the weather in {city} {when}? ({text})", today=today, city=city), ""
 
     where = where or world.place(ip, name)
     moment = world.now(where)
@@ -263,6 +267,11 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0):
 
 @app.get("/health")
 def health():
+    """Open, and nothing secret in it. With ?detail=1, where memory is kept and whether the face
+    models are loaded: open it in a browser to check the toy's cloud without a laptop."""
+    if request.args.get("detail"):
+        return jsonify({"ok": True, "memory": store.kind(), "faces": "ready" if faces.ready() else "loading"})
+
     return jsonify({"ok": True})
 
 

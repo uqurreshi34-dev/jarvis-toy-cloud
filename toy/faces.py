@@ -56,7 +56,8 @@ FINDER_SURE = 0.6
 GREET_AGAIN = 600.0
 NAME_MOST = 30
 
-_lock = threading.Lock()
+_lock = threading.Lock()          # who is learning, seen, greeted: held only for a moment
+_model_lock = threading.Lock()    # the models: fetched, loaded and run one at a time, never under _lock
 _models = {}
 _learning = {}    # toy -> {"name", "until", "features": []}
 _last_seen = {}   # toy -> (name or None, monotonic time)
@@ -86,8 +87,13 @@ def _model_file(which):
     return path
 
 
+def ready():
+    """True once the models are loaded (for /health)."""
+    return bool(_models)
+
+
 def _ready():
-    with _lock:
+    with _model_lock:
         if not _models:
             import cv2
 
@@ -110,7 +116,7 @@ def fingerprint(jpeg):
 
     finder, recogniser = _ready()
 
-    with _lock:
+    with _model_lock:
         finder.setInputSize((picture.shape[1], picture.shape[0]))
         _count, found = finder.detect(picture)
 
