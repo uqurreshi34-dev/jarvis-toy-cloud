@@ -8,6 +8,15 @@ where it sends and which token it uses:
   out: 200 with the reply as raw PCM (audio/L16, 16 kHz) and X-Jarvis-Mood "affection"/"normal",
        or 204 when the toy should say nothing and keep listening.
 
+  The answer may carry X-Jarvis-Switch "pc" or "cloud" when it was asked to change mode ("Jarvis,
+  switch to PC mode"): the toy keeps the choice. X-Jarvis-Fallback "pc" on a request means the toy
+  is in PC mode but the PC is not answering; the first answer in a while says so.
+
+POST /camera/seen takes what the toy's own detection is sure of, as PC JARVIS does, and answers
+{"ok": true, "say": true} when something has come into view; the toy then fetches the words from
+POST /toy/announce (raw PCM, or 204) and says them. POST /camera/face takes the picture of a face
+the toy found; recognising it is the next chunk, and nothing is kept.
+
 GET /health answers {"ok": true} with nothing secret in it, for Render and UptimeRobot.
 """
 
@@ -18,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from toy import brain, hearing, social, voice, wake
+from toy import brain, hearing, modes, seen, social, voice, wake
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -28,6 +37,20 @@ MIN_VOICE_BYTES = 44 + 32000 // 3
 
 # After an answer heard hands-free, a follow-up needs no name for this long.
 FOLLOW_UP_SECONDS = 12.0
+
+# A report of what the toy sees is small (names and boxes); a face picture is a VGA JPEG.
+MAX_SEEN_BYTES = 32 * 1024
+MAX_FACE_BYTES = 200 * 1024
+
+# In PC mode with the PC off, the toy falls back to the cloud: the first answer says so, and again
+# only after this long, so every answer is not prefixed with it.
+FALLBACK_REMIND_SECONDS = 600.0
+FALLBACK_WORDS = "Defaulting to the cloud, sir: your PC isn't answering. Turn it on and try again for PC mode."
+
+SWITCH_WORDS = {
+    "pc": "Switching to PC mode, sir. If your PC is off, I'll fall back to the cloud.",
+    "cloud": "Switching to cloud mode, sir. Your PC can rest.",
+}
 
 MUTE_WORDS = frozenset({"mute", "mute yourself", "be quiet", "go quiet", "stop listening"})
 UNMUTE_WORDS = frozenset({"unmute", "unmute yourself", "start listening", "listen again",
@@ -43,7 +66,7 @@ _toys_lock = threading.Lock()
 
 def _toy(name):
     with _toys_lock:
-        return _toys.setdefault(name or "toy", {"muted": False, "follow_until": 0.0})
+        return _toys.setdefault(name or "toy", {"muted": False, "follow_until": 0.0, "fallback_said": None})
 
 
 def _authorised():
@@ -70,41 +93,45 @@ def mute_asked(text):
 
 
 def respond(wav, heard_by, toy):
-    """(what to say, mood) for a recording, or (None, "") to stay silent. Mirrors phone.py's
+    """(what to say, mood, switch) for a recording, or (None, "", "") to stay silent. Mirrors phone.py's
     _toy_answer: hands-free speech is his only when it starts with his name or comes within a
     follow-up window; anything else is not his, and gets silence rather than a complaint."""
     hands_free = heard_by == "sound"
     following = hands_free and time.monotonic() < toy["follow_until"]
 
     if len(wav) < MIN_VOICE_BYTES:
-        return (None, "") if hands_free else ("That was too short, sir. Hold the button while you speak.", "")
+        return (None, "", "") if hands_free else ("That was too short, sir. Hold the button while you speak.", "", "")
 
     text = hearing.transcribe(wav)
 
     if not text:
-        return (None, "") if hands_free else ("I couldn't make out what you said, sir.", "")
+        return (None, "", "") if hands_free else ("I couldn't make out what you said, sir.", "", "")
 
     if wake.only_filler(text):
         print(f'[filtered] "{text}" (single filler word)', flush=True)
-        return (None, "") if hands_free else ("I only caught a stray word, sir.", "")
+        return (None, "", "") if hands_free else ("I only caught a stray word, sir.", "", "")
 
     if hands_free and not following:
         command = wake.addressed_command(text)
 
         if command is None:
             print(f'[ignored] "{text}" (not said to JARVIS)', flush=True)
-            return None, ""
+            return None, "", ""
 
         print(f'[toy] woken by "{text}"', flush=True)
 
         if not command:
             if toy["muted"]:
-                return None, ""
+                return None, "", ""
 
             toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS
-            return "Yes, sir?", ""
+            return "Yes, sir?", "", ""
 
         text = command
+    elif following:
+        # A follow-up may still start with his name: it is not part of the question.
+        command = wake.addressed_command(text)
+        text = command if command else text
 
     asked = mute_asked(text)
 
@@ -112,17 +139,24 @@ def respond(wav, heard_by, toy):
         toy["muted"] = False
         toy["follow_until"] = 0.0
         print("[toy] unmuted", flush=True)
-        return "I'm listening again, sir.", ""
+        return "I'm listening again, sir.", "", ""
 
     if toy["muted"]:
         print(f'[ignored] "{text}" (muted)', flush=True)
-        return None, ""
+        return None, "", ""
 
     if asked == "mute":
         toy["muted"] = True
         toy["follow_until"] = 0.0
         print("[toy] muted", flush=True)
-        return "Muted, sir. Say Jarvis, unmute, when you want me.", ""
+        return "Muted, sir. Say Jarvis, unmute, when you want me.", "", ""
+
+    switch = modes.switch_asked(text)
+
+    if switch:
+        print(f"[toy] switching to {switch} mode", flush=True)
+        toy["follow_until"] = 0.0
+        return SWITCH_WORDS[switch], "", switch
 
     print(f'[toy] heard "{text}"', flush=True)
 
@@ -131,7 +165,37 @@ def respond(wav, heard_by, toy):
     said = social.reply(which) if which else brain.answer(text)
 
     toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS if hands_free else 0.0
-    return said, mood
+    return said, mood, ""
+
+
+def _fallback_note(toy, now=None):
+    """FALLBACK_WORDS when the toy fell back from an unanswering PC and has not been told lately."""
+    now = time.monotonic() if now is None else now
+    said = toy["fallback_said"]
+
+    if said is not None and now - said < FALLBACK_REMIND_SECONDS:
+        return ""
+
+    toy["fallback_said"] = now
+    return FALLBACK_WORDS
+
+
+def _pcm_response(said, mood="", switch=""):
+    data = voice.pcm16(said)
+
+    if not data:
+        return jsonify({"error": "No audio."}), 503
+
+    headers = {
+        "Content-Type": f"audio/L16; rate={voice.RATE}; channels=1",
+        "Cache-Control": "no-store",
+        "X-Jarvis-Mood": mood or "normal",
+    }
+
+    if switch:
+        headers["X-Jarvis-Switch"] = switch
+
+    return data, 200, headers
 
 
 @app.get("/health")
@@ -155,25 +219,76 @@ def toy_talk():
     heard_by = (request.headers.get("X-Jarvis-Toy") or "button").strip().casefold()
     toy = _toy((request.headers.get("X-Jarvis-Camera") or "").strip())
 
+    fell_back = (request.headers.get("X-Jarvis-Fallback") or "").strip().casefold() == "pc"
+
     try:
-        said, mood = respond(request.get_data(cache=False), heard_by, toy)
+        said, mood, switch = respond(request.get_data(cache=False), heard_by, toy)
     except Exception as error:
         print(f"[toy-cloud] talk failed: {error}", flush=True)
-        said, mood = "Something went wrong there, sir.", ""
+        said, mood, switch = "Something went wrong there, sir.", "", ""
 
     if said is None:
         return "", 204
 
-    data = voice.pcm16(said)
+    # Asked for PC mode while already falling back from it: the switch itself says what happens.
+    if fell_back and not switch:
+        note = _fallback_note(toy)
+        said = f"{note} {said}" if note else said
 
-    if not data:
-        return jsonify({"error": "No audio."}), 503
+    return _pcm_response(said, mood, switch)
 
-    return data, 200, {
-        "Content-Type": f"audio/L16; rate={voice.RATE}; channels=1",
-        "Cache-Control": "no-store",
-        "X-Jarvis-Mood": mood or "normal",
-    }
+
+@app.post("/camera/seen")
+def camera_seen():
+    if not _authorised():
+        return jsonify({"error": "unauthorised"}), 403
+
+    if request.content_length is None or request.content_length > MAX_SEEN_BYTES:
+        return jsonify({"error": "too large"}), 413
+
+    name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+    due = seen.record(name, request.get_json(silent=True))
+
+    if due is None:
+        return jsonify({"error": "not a report"}), 400
+
+    # A muted toy says nothing unasked either.
+    if _toy(name)["muted"]:
+        seen.take(name)
+        due = False
+
+    return jsonify({"ok": True, "say": bool(due)}), 200
+
+
+@app.post("/toy/announce")
+def toy_announce():
+    if not _authorised():
+        return jsonify({"error": "unauthorised"}), 403
+
+    name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+    said = seen.take(name)
+
+    if not said or _toy(name)["muted"]:
+        return "", 204
+
+    return _pcm_response(said)
+
+
+@app.post("/camera/face")
+def camera_face():
+    """A face the toy's own face finder saw. Recognising whose it is comes next (it needs the
+    memory database first); for now it is checked and let go, never kept."""
+    if not _authorised():
+        return jsonify({"error": "unauthorised"}), 403
+
+    if request.content_length is None or request.content_length > MAX_FACE_BYTES:
+        return jsonify({"error": "too large"}), 413
+
+    if request.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold() != "image/jpeg":
+        return jsonify({"error": "a face must be a JPEG"}), 400
+
+    request.get_data(cache=False)
+    return jsonify({"ok": True}), 200
 
 
 if __name__ == "__main__":

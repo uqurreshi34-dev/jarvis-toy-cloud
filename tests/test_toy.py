@@ -243,3 +243,140 @@ def test_voice_monthly_guard(monkeypatch):
 def test_bad_voice_name_falls_back(monkeypatch):
     monkeypatch.setenv("GOOGLE_TTS_VOICE", "Puck; drop table")
     assert voice.voice_name() == voice.DEFAULT_VOICE
+
+
+# ---- PC mode and cloud mode ---------------------------------------------------------------------
+
+from toy import modes, seen  # noqa: E402
+
+
+@pytest.mark.parametrize("said, mode", [
+    ("switch to PC mode", "pc"),
+    ("Switch to P.C. mode.", "pc"),
+    ("go back to pc mode please", "pc"),
+    ("computer mode", "pc"),
+    ("switch to cloud mode", "cloud"),
+    ("Cloud mode.", "cloud"),
+    ("change to the cloud mode", "cloud"),
+    ("what is cloud mode", None),
+    ("switch on the pc", None),
+    ("tell me about pc mode and cloud mode", None),
+])
+def test_switch_asked(said, mode):
+    assert modes.switch_asked(said) == mode
+
+
+def test_switch_is_told_to_the_toy(client):
+    response = talk(client, "Jarvis, switch to PC mode")
+    assert response.headers["X-Jarvis-Switch"] == "pc" and response.data.startswith(b"Switching to PC mode")
+    response = talk(client, "switch to cloud mode", how="button")
+    assert response.headers["X-Jarvis-Switch"] == "cloud"
+    assert "X-Jarvis-Switch" not in talk(client, "Jarvis, hello").headers
+
+
+def test_muted_toy_does_not_switch(client):
+    talk(client, "Jarvis, mute")
+    assert talk(client, "Jarvis, switch to PC mode").status_code == 204
+
+
+def fall_back(client, said):
+    client.heard["text"] = said
+    return client.post("/toy/talk", data=SPEECH, headers={
+        "X-Jarvis-Token": TOKEN, "Content-Type": "audio/wav", "X-Jarvis-Toy": "sound",
+        "X-Jarvis-Camera": "toy cam", "X-Jarvis-Fallback": "pc"})
+
+
+def test_fallback_is_said_once_then_not_again(client):
+    first = fall_back(client, "Jarvis, hello").data.decode()
+    assert first.startswith("Defaulting to the cloud, sir") and first.endswith("answer to hello")
+    assert fall_back(client, "Jarvis, hello again").data == b"answer to hello again"
+
+
+def test_fallback_says_nothing_when_not_addressed(client):
+    assert fall_back(client, "what time is it").status_code == 204
+    assert fall_back(client, "Jarvis, hi").data.decode().startswith("Defaulting to the cloud")
+
+
+def test_fallback_note_comes_back_after_a_while(client):
+    toy = toy_app._toy("toy cam")
+    assert toy_app._fallback_note(toy, now=1000.0)
+    assert not toy_app._fallback_note(toy, now=1000.0 + 60)
+    assert toy_app._fallback_note(toy, now=1000.0 + toy_app.FALLBACK_REMIND_SECONDS + 1)
+
+
+# ---- what the toy sees ------------------------------------------------------------------------
+
+def report(*labels):
+    return {"name": "toy cam", "objects": [{"label": label, "score": 0.8, "box": [0, 0, 1, 1]} for label in labels]}
+
+
+def see(client, payload, toy="toy cam", token=TOKEN):
+    return client.post("/camera/seen", json=payload, headers={"X-Jarvis-Token": token, "X-Jarvis-Camera": toy})
+
+
+def announce(client, toy="toy cam"):
+    return client.post("/toy/announce", headers={"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": toy})
+
+
+@pytest.fixture
+def fresh_sight():
+    seen.forget()
+    yield
+    seen.forget()
+
+
+def test_someone_coming_into_view_is_said_once(client, fresh_sight):
+    assert see(client, report("person")).get_json() == {"ok": True, "say": True}
+    assert announce(client).data == b"I can see someone, sir."
+    assert announce(client).status_code == 204
+    assert see(client, report("person")).get_json()["say"] is False
+
+
+def test_more_of_them_is_news(client, fresh_sight):
+    see(client, report("person", "cup"))
+    assert announce(client).data == b"I can see someone and a cup, sir."
+    see(client, report("person", "cup", "cup", "cup"))
+    assert announce(client).data == b"I can see three cups, sir."
+
+
+def test_back_after_being_away_is_news(fresh_sight):
+    assert seen.record("t", report("person"), now=100.0)
+    assert not seen.record("t", report("person"), now=110.0)
+    assert seen.record("t", report("person"), now=110.0 + seen.AWAY_SECONDS + 1)
+
+
+def test_ignored_things_are_never_said(client, fresh_sight, monkeypatch):
+    monkeypatch.setenv("TOY_DETECT_IGNORE", "dining table, sink")
+    assert see(client, report("dining table")).get_json()["say"] is False
+
+
+def test_stale_announcement_is_dropped(fresh_sight):
+    seen.record("t", report("person"), now=100.0)
+    assert seen.take("t", now=100.0 + seen.PENDING_SECONDS + 1) is None
+
+
+def test_seen_is_checked(client, fresh_sight):
+    assert see(client, report("person"), token="nope").status_code == 403
+    assert see(client, {"objects": "lots"}).status_code == 400
+    assert see(client, {"objects": [{"label": "x" * 41}]}).status_code == 400
+
+
+def test_muted_toy_announces_nothing(client, fresh_sight):
+    talk(client, "Jarvis, mute")
+    assert see(client, report("person")).get_json()["say"] is False
+    assert announce(client).status_code == 204
+
+
+def test_words():
+    assert seen.words({"person": 2}) == "I can see two people, sir."
+    assert seen.words({"bottle": 1, "person": 1, "cup": 2}) == "I can see someone, a bottle and two cups, sir."
+
+
+def test_face_is_taken_and_let_go(client):
+    headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
+    assert client.post("/camera/face", data=b"\xff\xd8jpeg", headers=headers).get_json() == {"ok": True}
+    assert client.post("/camera/face", data=b"x" * (toy_app.MAX_FACE_BYTES + 1), headers=headers).status_code == 413
+    headers["Content-Type"] = "image/png"
+    assert client.post("/camera/face", data=b"png", headers=headers).status_code == 400
+    headers["X-Jarvis-Token"] = "nope"
+    assert client.post("/camera/face", data=b"\xff\xd8", headers=headers).status_code == 403

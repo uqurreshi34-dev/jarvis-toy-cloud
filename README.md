@@ -39,6 +39,21 @@ Optional, with defaults: `GROQ_MODEL` (openai/gpt-oss-20b), `GROQ_WHISPER_MODEL`
 Render: build `pip install -r requirements.txt`, start
 `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 60`, health check `/health`.
 
+## PC mode and cloud mode
+
+"Jarvis, switch to PC mode" / "Jarvis, switch to cloud mode", said to the toy: the answer carries
+`X-Jarvis-Switch` and the toy keeps the choice. In PC mode with the PC off, the toy falls back here
+with `X-Jarvis-Fallback: pc`, and the first answer in ten minutes says so. PC JARVIS's `phone.py`
+knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
+
+## What the toy sees
+
+- `POST /camera/seen`: what the toy's own detection is sure of (names and boxes, never a picture).
+  Answers `{"ok": true, "say": true}` when something has come into view.
+- `POST /toy/announce`: the words for it ("I can see someone, sir."), as PCM, or 204.
+- `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
+  the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
+
 ## Trying it from the PC
 
 ```
@@ -55,6 +70,7 @@ python -m pytest -q
 ## Roadmap
 
 1. Talk: done here.
+1b. PC mode and cloud mode; what the toy sees, said on the toy: done here.
 2. Memory that survives restarts (a free database).
 3. Web search and weather (where the toy is: a guess from its connection, or what it is told).
 4. Announcements, including ones PC JARVIS sends.
