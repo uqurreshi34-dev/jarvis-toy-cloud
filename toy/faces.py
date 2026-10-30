@@ -30,6 +30,10 @@ import threading
 import time
 from pathlib import Path
 
+# Imported here, once, as the app starts, on its main thread. Imported inside the functions, the first
+# face's request thread and the start-up thread that loads the models imported it at the same time,
+# and every face failed: "partially initialized module 'cv2' has no attribute 'imdecode'" (30 October 2026).
+import cv2
 import numpy as np
 import requests
 
@@ -122,7 +126,6 @@ def _ready():
     with _model_lock:
         if not _models:
             _status["now"] = "loading"
-            import cv2
 
             _models["finder"] = cv2.FaceDetectorYN.create(str(_model_file("finder")), "", (320, 240),
                                                           FINDER_SURE, 0.3, 5000)
@@ -134,7 +137,6 @@ def _ready():
 def fingerprint(jpeg):
     """The fingerprint of the one clear face in [jpeg], or None (no face, or more than one: whose
     would it be?)."""
-    import cv2
 
     picture = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
 

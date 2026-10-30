@@ -57,6 +57,7 @@ UNMUTE_WORDS = frozenset({"unmute", "unmute yourself", "start listening", "liste
                           "you can listen again"})
 
 app = Flask(__name__)
+_STARTED = time.monotonic()
 
 # Per toy (X-Jarvis-Camera): muted, and until when a follow-up needs no name. Kept in memory: a
 # restart unmutes the toy and ends a follow-up window, which is the safe way round.
@@ -270,7 +271,8 @@ def health():
     """Open, and nothing secret in it. With ?detail=1, where memory is kept and whether the face
     models are loaded: open it in a browser to check the toy's cloud without a laptop."""
     if request.args.get("detail"):
-        return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status()})
+        return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status(),
+                        "process": os.getpid(), "up_seconds": round(time.monotonic() - _STARTED)})
 
     return jsonify({"ok": True})
 

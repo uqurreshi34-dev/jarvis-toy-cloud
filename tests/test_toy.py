@@ -951,3 +951,14 @@ def test_face_model_status_says_why(monkeypatch, fresh_faces):
 
 def test_face_models_live_beside_the_code_unless_told(monkeypatch):
     assert faces.MODEL_FOLDER.name == "models" or os.getenv("TOY_MODEL_FOLDER")
+
+
+def test_cv2_is_imported_once_on_the_main_thread():
+    """Imported inside the functions, two threads imported it at once on Render and every face failed."""
+    source = open(os.path.join(os.path.dirname(faces.__file__), "faces.py"), encoding="ascii").read()
+    assert source.count("import cv2") == 1 and "\nimport cv2\n" in source
+
+
+def test_health_says_which_copy_answered(client):
+    detail = client.get("/health?detail=1").get_json()
+    assert detail["process"] == os.getpid() and detail["up_seconds"] >= 0
