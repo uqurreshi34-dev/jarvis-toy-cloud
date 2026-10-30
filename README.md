@@ -36,7 +36,7 @@ Optional, with defaults: `GROQ_MODEL` (openai/gpt-oss-20b), `GROQ_WHISPER_MODEL`
 (whisper-large-v3-turbo), `GOOGLE_TTS_VOICE` (en-GB-Chirp3-HD-Achird), `GOOGLE_TTS_RATE`,
 `GOOGLE_TTS_MONTHLY_CHARACTERS` (950000, under Chirp 3 HD's free million).
 
-Render: build `pip install -r requirements.txt`, start
+Render: build `pip install -r requirements.txt && python -m toy.faces`, start
 `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 60`, health check `/health`.
 
 ## PC mode and cloud mode

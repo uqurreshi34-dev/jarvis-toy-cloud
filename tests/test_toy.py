@@ -448,6 +448,7 @@ class Answer:
 
 
 def test_weather_words(monkeypatch):
+    world.forget()
     sent = {}
 
     def get(url, timeout=None, params=None, headers=None):
@@ -888,26 +889,47 @@ def test_weather_service_down_is_looked_up_instead(client, fresh_faces, monkeypa
     assert "weather in Birmingham today" in asked[0][0] and asked[0][1]["city"] == "Birmingham"
 
 
-def test_weather_is_tried_twice_and_says_why(monkeypatch, capsys):
+def met_norway(today, hours):
+    """A MET Norway compact forecast: [(hour from today's midnight UTC, temperature, symbol), ...]."""
+    base = datetime.datetime.combine(today, datetime.time(0), tzinfo=datetime.timezone.utc)
+    return {"properties": {"timeseries": [
+        {"time": (base + datetime.timedelta(hours=hour)).isoformat().replace("+00:00", "Z"),
+         "data": {"instant": {"details": {"air_temperature": temperature}},
+                  "next_6_hours": {"summary": {"symbol_code": symbol}}}}
+        for hour, temperature, symbol in hours]}}
+
+
+def test_open_meteo_limit_falls_to_met_norway_and_rests(monkeypatch, capsys):
+    world.forget()
     calls = []
+    today = datetime.datetime.now(ZoneInfo("Europe/London")).date()
+    met = met_norway(today, [(h, 8 + h / 4, "cloudy") for h in range(0, 24, 3)] +
+                     [(24 + h, 5 + h / 4, "lightrain") for h in range(0, 24, 3)])
 
     def get(url, timeout=None, params=None, headers=None):
-        calls.append(params)
+        calls.append(url)
 
-        if len(calls) == 1:
-            raise world.requests.Timeout("slow")
+        if url == world.WEATHER_URL:
+            return Answer({"error": True, "reason": "Daily API request limit exceeded."}, status=429)
 
-        return Answer({"daily": {"weather_code": [3, 3], "temperature_2m_max": [10, 11],
-                                 "temperature_2m_min": [5, 6], "precipitation_probability_max": [0, 0]}})
+        assert headers["User-Agent"].startswith("jarvis-toy-cloud") and params == {"lat": 52.48, "lon": -1.89}
+        return Answer(met)
 
     monkeypatch.setattr(world.requests, "get", get)
-    said = world.weather_words("tomorrow", {"city": "Birmingham", "lat": "52.48", "lon": -1.89})
-    assert said == "Tomorrow in Birmingham, sir, expect overcast skies: a high of 11 and a low of 6."
-    assert len(calls) == 2 and calls[1]["latitude"] == 52.48
-    assert "try 1 failed" in capsys.readouterr().out
-    monkeypatch.setattr(world.requests, "get", lambda *a, **k: Answer({"error": True, "reason": "bad"}, status=400))
-    assert world.weather_words("today", {"city": "B", "lat": 1, "lon": 2}) is None
-    assert "answered 400" in capsys.readouterr().out
+    where = {"city": "Birmingham", "lat": 52.48, "lon": -1.89, "timezone": "Europe/London"}
+    said = world.weather_words("today", where)
+    assert said.startswith("It's 8 degrees in Birmingham now, sir, with overcast skies today: a high of ")
+    assert "daily limit is spent" in capsys.readouterr().out
+    assert world.weather_words("tomorrow", where).startswith("Tomorrow in Birmingham, sir, expect light rain")
+    assert calls == [world.WEATHER_URL, world.MET_URL], "kept a while, and Open-Meteo rested"
+    world.forget()
+
+
+def test_no_service_answers(monkeypatch):
+    world.forget()
+    monkeypatch.setattr(world.requests, "get", lambda *a, **k: Answer({"error": True}, status=500))
+    assert world.weather_words("today", {"city": "B", "lat": 1, "lon": 2, "timezone": "Europe/London"}) is None
+    world.forget()
 
 
 def test_health_detail_for_a_browser(client, monkeypatch):
@@ -915,3 +937,17 @@ def test_health_detail_for_a_browser(client, monkeypatch):
     assert client.get("/health").get_json() == {"ok": True}
     detail = client.get("/health?detail=1").get_json()
     assert detail["memory"] == "memory only" and detail["faces"] in ("ready", "loading")
+
+
+def test_face_model_status_says_why(monkeypatch, fresh_faces):
+    monkeypatch.setattr(faces, "_models", {})
+
+    def broken():
+        raise RuntimeError("download refused")
+
+    monkeypatch.setattr(faces, "_ready", broken)
+    assert faces.warm_up() is False and faces.status().startswith("failed: RuntimeError: download refused")
+
+
+def test_face_models_live_beside_the_code_unless_told(monkeypatch):
+    assert faces.MODEL_FOLDER.name == "models" or os.getenv("TOY_MODEL_FOLDER")

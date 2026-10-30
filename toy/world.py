@@ -237,70 +237,198 @@ def weather_asked(text):
     return "tomorrow" if "tomorrow" in words else "today"
 
 
+# Open-Meteo's free plan counts requests per internet address, and Render's free servers share
+# their addresses with thousands of other apps: it answered 429, "Daily API request limit exceeded",
+# on the first day (30 October 2026). So it is rested for the day after a 429, and MET Norway's
+# forecast (free, no key, counted by who asks rather than from where: its terms ask for a User-Agent
+# naming the app) is asked instead. Each place's forecast is kept WEATHER_KEEP_SECONDS.
+MET_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+MET_AGENT = "jarvis-toy-cloud/1.0 github.com/uqurreshi34-dev/jarvis-toy-cloud"
+WEATHER_KEEP_SECONDS = 15 * 60
+OPEN_METEO_REST_SECONDS = 6 * 3600
+
+_weather = {}                 # (lat, lon) -> (forecast, monotonic time)
+_open_meteo_rests_until = 0.0
+
+# MET Norway's symbols ("lightrainshowers_day"), in words.
+_SYMBOLS = {
+    "clearsky": "clear skies", "fair": "mostly clear skies", "partlycloudy": "some cloud",
+    "cloudy": "overcast skies", "fog": "fog",
+    "lightrain": "light rain", "rain": "rain", "heavyrain": "heavy rain",
+    "lightrainshowers": "light showers", "rainshowers": "showers", "heavyrainshowers": "heavy showers",
+    "lightsleet": "light sleet", "sleet": "sleet", "heavysleet": "heavy sleet",
+    "lightsleetshowers": "sleet showers", "sleetshowers": "sleet showers", "heavysleetshowers": "sleet showers",
+    "lightsnow": "light snow", "snow": "snow", "heavysnow": "heavy snow",
+    "lightsnowshowers": "snow showers", "snowshowers": "snow showers", "heavysnowshowers": "heavy snow showers",
+}
+_WET = ("rain", "sleet", "snow", "shower", "drizzle", "thunder")
+
+
+def _sky_from_symbol(symbol):
+    symbol = str(symbol or "").split("_")[0]
+
+    if "thunder" in symbol:
+        return "thunderstorms"
+
+    return _SYMBOLS.get(symbol, "mixed weather")
+
+
+def _from_open_meteo(lat, lon):
+    """{"now", "days": [{"high", "low", "sky", "rain"}, ...]} or None (and rested after a 429)."""
+    global _open_meteo_rests_until
+
+    if time.monotonic() < _open_meteo_rests_until:
+        return None
+
+    try:
+        response = requests.get(WEATHER_URL, timeout=WEATHER_TIMEOUT, params={
+            "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 2,
+            "current": "temperature_2m,weather_code",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        })
+    except requests.RequestException as error:
+        print(f"[toy-cloud] weather: Open-Meteo failed ({type(error).__name__}: {error})", flush=True)
+        return None
+
+    if response.status_code == 429:
+        _open_meteo_rests_until = time.monotonic() + OPEN_METEO_REST_SECONDS
+        print("[toy-cloud] weather: Open-Meteo's daily limit is spent on Render's shared address; "
+              "MET Norway instead for a while", flush=True)
+        return None
+
+    if response.status_code != 200:
+        print(f"[toy-cloud] weather: Open-Meteo answered {response.status_code}: {response.text[:200]}", flush=True)
+        return None
+
+    try:
+        data = response.json()
+        daily = data["daily"]
+        days = [{"high": round(daily["temperature_2m_max"][day]), "low": round(daily["temperature_2m_min"][day]),
+                 "sky": _CODES.get(daily["weather_code"][day], "mixed weather"),
+                 "rain": (daily.get("precipitation_probability_max") or [None, None])[day], "wet": False}
+                for day in (0, 1)]
+        now_temp = (data.get("current") or {}).get("temperature_2m")
+    except (ValueError, KeyError, IndexError, TypeError) as error:
+        print(f"[toy-cloud] weather: Open-Meteo's forecast was not as expected ({type(error).__name__})", flush=True)
+        return None
+
+    return {"now": now_temp, "days": days}
+
+
+def _from_met_norway(lat, lon, zone_name):
+    """The same from MET Norway's compact forecast: highs, lows and the sky worked out per local day."""
+    try:
+        response = requests.get(MET_URL, timeout=WEATHER_TIMEOUT, headers={"User-Agent": MET_AGENT},
+                                params={"lat": lat, "lon": lon})
+    except requests.RequestException as error:
+        print(f"[toy-cloud] weather: MET Norway failed ({type(error).__name__}: {error})", flush=True)
+        return None
+
+    if response.status_code not in (200, 203):
+        print(f"[toy-cloud] weather: MET Norway answered {response.status_code}: {response.text[:200]}", flush=True)
+        return None
+
+    try:
+        series = response.json()["properties"]["timeseries"]
+    except (ValueError, KeyError, TypeError):
+        print("[toy-cloud] weather: MET Norway's forecast was not as expected", flush=True)
+        return None
+
+    where_zone = zone({"timezone": zone_name})
+    today = datetime.datetime.now(where_zone).date()
+    days = []
+
+    for offset in (0, 1):
+        date = today + datetime.timedelta(days=offset)
+        temps, skies, wet = [], [], False
+
+        for step in series:
+            try:
+                at = datetime.datetime.fromisoformat(step["time"].replace("Z", "+00:00")).astimezone(where_zone)
+                data = step["data"]
+                temperature = data["instant"]["details"]["air_temperature"]
+            except (KeyError, ValueError, TypeError):
+                continue
+
+            if at.date() != date:
+                continue
+
+            temps.append(temperature)
+            symbol = ((data.get("next_6_hours") or data.get("next_1_hours") or {}).get("summary") or {}).get("symbol_code")
+
+            if symbol and 6 <= at.hour <= 18:
+                skies.append(symbol)
+
+            wet = wet or any(word in str(symbol or "") for word in _WET)
+
+        if not temps:
+            if offset == 0:
+                return None
+
+            break
+
+        sky = _sky_from_symbol(max(set(skies), key=skies.count)) if skies else "mixed weather"
+        days.append({"high": round(max(temps)), "low": round(min(temps)), "sky": sky, "rain": None, "wet": wet})
+
+    try:
+        now_temp = series[0]["data"]["instant"]["details"]["air_temperature"]
+    except (KeyError, IndexError, TypeError):
+        now_temp = None
+
+    return {"now": now_temp, "days": days}
+
+
+def forecast(where):
+    """The forecast where the toy is, from whichever service answers, kept a quarter of an hour."""
+    try:
+        lat, lon = round(float(where["lat"]), 4), round(float(where["lon"]), 4)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    with _lock:
+        kept = _weather.get((lat, lon))
+
+    if kept and time.monotonic() - kept[1] < WEATHER_KEEP_SECONDS:
+        return kept[0]
+
+    found = _from_open_meteo(lat, lon) or _from_met_norway(lat, lon, where.get("timezone"))
+
+    if found:
+        with _lock:
+            _weather[(lat, lon)] = (found, time.monotonic())
+
+    return found
+
+
 def weather_words(when, where):
-    """The weather where the toy is, said; None when it could not be found out."""
+    """The weather where the toy is, said; None when no service could say."""
     if not where or where.get("lat") is None or where.get("lon") is None:
         return None
 
-    data = None
-
-    # Twice: a slow first answer from a sleepy free server is the commonest failure.
-    for attempt in (1, 2):
-        try:
-            response = requests.get(WEATHER_URL, timeout=WEATHER_TIMEOUT, params={
-                "latitude": round(float(where["lat"]), 4), "longitude": round(float(where["lon"]), 4),
-                "timezone": "auto", "forecast_days": 2,
-                "current": "temperature_2m,weather_code",
-                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-            })
-        except (requests.RequestException, ValueError, TypeError) as error:
-            print(f"[toy-cloud] weather: Open-Meteo try {attempt} failed ({type(error).__name__}: {error})", flush=True)
-            continue
-
-        if response.status_code != 200:
-            print(f"[toy-cloud] weather: Open-Meteo answered {response.status_code}: {response.text[:200]}",
-                  flush=True)
-            continue
-
-        try:
-            data = response.json()
-        except ValueError:
-            print("[toy-cloud] weather: Open-Meteo's answer was not JSON", flush=True)
-            continue
-
-        break
-
-    if not data:
-        return None
-
-    daily = data.get("daily") or {}
+    found = forecast(where)
     day = 1 if when == "tomorrow" else 0
 
-    try:
-        high = round(daily["temperature_2m_max"][day])
-        low = round(daily["temperature_2m_min"][day])
-        code = daily["weather_code"][day]
-        rain = (daily.get("precipitation_probability_max") or [None, None])[day]
-    except (KeyError, IndexError, TypeError) as error:
-        print(f"[toy-cloud] weather: the forecast was not as expected ({type(error).__name__}: {error}; "
-              f"keys {sorted(daily)})", flush=True)
+    if not found or len(found["days"]) <= day:
         return None
 
+    today_or_tomorrow = found["days"][day]
     city = where.get("city") or "here"
-    sky = _CODES.get(code, "mixed weather")
+    sky = today_or_tomorrow["sky"]
 
     if when == "today":
-        current = data.get("current") or {}
-        now_temp = current.get("temperature_2m")
+        now_temp = found.get("now")
         start = f"It's {round(now_temp)} degrees in {city} now, sir, with {sky} today" if now_temp is not None \
             else f"In {city} today, sir, expect {sky}"
     else:
         start = f"Tomorrow in {city}, sir, expect {sky}"
 
-    said = f"{start}: a high of {high} and a low of {low}"
+    said = f"{start}: a high of {today_or_tomorrow['high']} and a low of {today_or_tomorrow['low']}"
+    rain = today_or_tomorrow.get("rain")
 
     if isinstance(rain, (int, float)) and rain >= 30:
         said += f", with a {round(rain)} percent chance of rain"
+    elif today_or_tomorrow.get("wet") and not any(word in sky for word in _WET):
+        said += ", with some rain at times"
 
     return said + "."
 
@@ -341,5 +469,10 @@ UNKNOWN_PLACE = "I don't know where we are yet, sir. Tell me: Jarvis, I live in,
 
 
 def forget():
+    global _open_meteo_rests_until
+
     with _lock:
         _places.clear()
+        _weather.clear()
+
+    _open_meteo_rests_until = 0.0

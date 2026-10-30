@@ -270,7 +270,7 @@ def health():
     """Open, and nothing secret in it. With ?detail=1, where memory is kept and whether the face
     models are loaded: open it in a browser to check the toy's cloud without a laptop."""
     if request.args.get("detail"):
-        return jsonify({"ok": True, "memory": store.kind(), "faces": "ready" if faces.ready() else "loading"})
+        return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status()})
 
     return jsonify({"ok": True})
 
@@ -385,16 +385,9 @@ def camera_face():
     return jsonify({"ok": True, "say": False}), 200
 
 
-def _warm_up():
-    """The face models fetched and loaded before the first face arrives, not while it waits."""
-    try:
-        faces._ready()
-    except Exception as error:   # noqa: BLE001 - tried again on the first face
-        print(f"[toy-cloud] faces: not ready yet ({type(error).__name__})", flush=True)
-
-
+# The face models loaded before the first face arrives, not while it waits.
 if os.getenv("TOY_WARM_UP", "1") != "0":
-    threading.Thread(target=_warm_up, daemon=True).start()
+    threading.Thread(target=faces.warm_up, daemon=True).start()
 
 
 if __name__ == "__main__":

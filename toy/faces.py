@@ -16,8 +16,11 @@ numbers, as PC JARVIS's actions/known_faces.py. Alike is their cosine.
 A known face coming into view is greeted by name ("Good evening, Sarah."), once in GREET_AGAIN.
 A stranger's face is compared and let go: nothing about it is kept.
 
-Models: YuNet (MIT) and SFace (Apache 2.0) from OpenCV's model zoo, fetched on first use into
-MODEL_FOLDER and checked against their SHA-256, as PC JARVIS's tools/face_model.py fetches them.
+Models: YuNet (MIT) and SFace (Apache 2.0) from OpenCV's model zoo, checked against their SHA-256
+as PC JARVIS's tools/face_model.py checks them. Fetched while Render builds (python -m toy.faces, in
+the build command) into models/ beside the code, so a restart has them at once; fetched on first
+use when they are not there. Loaded in the background as the service starts: /health?detail=1
+says "ready", "loading", or "failed: why".
 """
 
 import hashlib
@@ -40,7 +43,7 @@ MODELS = {
                     ZOO + "face_recognition_sface/face_recognition_sface_2021dec.onnx",
                     "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"),
 }
-MODEL_FOLDER = Path(os.getenv("TOY_MODEL_FOLDER") or "/tmp/toy-models")
+MODEL_FOLDER = Path(os.getenv("TOY_MODEL_FOLDER") or Path(__file__).resolve().parents[1] / "models")
 
 # As alike as this, from one picture: the same person. OpenCV's own for SFace is 0.363, over many
 # pictures; one picture from a small camera needs more. PC JARVIS measured you 0.38 to 0.50 by day
@@ -87,14 +90,38 @@ def _model_file(which):
     return path
 
 
+_status = {"now": "loading"}
+
+
+def status():
+    """"ready", "loading", or "failed: why" (for /health)."""
+    return "ready" if _models else _status["now"]
+
+
 def ready():
-    """True once the models are loaded (for /health)."""
+    """True once the models are loaded."""
     return bool(_models)
+
+
+def warm_up():
+    """Loads the models; says how it went in the log and in status()."""
+    started = time.monotonic()
+
+    try:
+        _ready()
+    except Exception as error:   # noqa: BLE001 - tried again on the first face
+        _status["now"] = f"failed: {type(error).__name__}: {str(error)[:120]}"
+        print(f"[toy-cloud] faces: {_status['now']}", flush=True)
+        return False
+
+    print(f"[toy-cloud] faces: ready in {time.monotonic() - started:.1f} s", flush=True)
+    return True
 
 
 def _ready():
     with _model_lock:
         if not _models:
+            _status["now"] = "loading"
             import cv2
 
             _models["finder"] = cv2.FaceDetectorYN.create(str(_model_file("finder")), "", (320, 240),
@@ -379,3 +406,9 @@ def forget_state():
         _learning.clear()
         _last_seen.clear()
         _greeted.clear()
+
+
+if __name__ == "__main__":
+    # The build step: python -m toy.faces fetches both models into MODEL_FOLDER.
+    for which in MODELS:
+        print(f"{MODELS[which][0]}: {_model_file(which)}")
