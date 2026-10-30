@@ -94,12 +94,26 @@ def _model_file(which):
     return path
 
 
-_status = {"now": "loading"}
+_status = {"now": "loading", "since": time.monotonic()}
+MODEL_WAIT = 20.0   # seconds a face waits for the models before it is let go, never hanging the toy
+
+
+def _say(text):
+    print(f"[toy-cloud] faces ({os.getpid()}): {text}", flush=True)
 
 
 def status():
-    """"ready", "loading", or "failed: why" (for /health)."""
-    return "ready" if _models else _status["now"]
+    """"ready", or what it is doing and for how long ("loading the finder for 12 s"), or "failed:
+    why" (for /health)."""
+    if _models.get("fingerprint") is not None:
+        return "ready"
+
+    return f"{_status['now']} for {time.monotonic() - _status['since']:.0f} s"
+
+
+def _step(text):
+    _status["now"] = text
+    _status["since"] = time.monotonic()
 
 
 def ready():
@@ -114,24 +128,33 @@ def warm_up():
     try:
         _ready()
     except Exception as error:   # noqa: BLE001 - tried again on the first face
-        _status["now"] = f"failed: {type(error).__name__}: {str(error)[:120]}"
-        print(f"[toy-cloud] faces: {_status['now']}", flush=True)
+        _step(f"failed: {type(error).__name__}: {str(error)[:120]}")
+        _say(_status["now"])
         return False
 
-    print(f"[toy-cloud] faces: ready in {time.monotonic() - started:.1f} s", flush=True)
+    _say(f"ready in {time.monotonic() - started:.1f} s")
     return True
 
 
 def _ready():
-    with _model_lock:
-        if not _models:
-            _status["now"] = "loading"
+    if not _model_lock.acquire(timeout=MODEL_WAIT):
+        raise TimeoutError(f"the models are still busy after {MODEL_WAIT:.0f} s ({_status['now']})")
 
-            _models["finder"] = cv2.FaceDetectorYN.create(str(_model_file("finder")), "", (320, 240),
-                                                          FINDER_SURE, 0.3, 5000)
-            _models["fingerprint"] = cv2.FaceRecognizerSF.create(str(_model_file("fingerprint")), "")
+    try:
+        if _models.get("fingerprint") is None:
+            _step("fetching the finder")
+            finder_file = _model_file("finder")
+            _step("fetching the fingerprinter")
+            fingerprint_file = _model_file("fingerprint")
+            _step("loading the finder")
+            finder = cv2.FaceDetectorYN.create(str(finder_file), "", (320, 240), FINDER_SURE, 0.3, 5000)
+            _step("loading the fingerprinter")
+            _models["finder"] = finder
+            _models["fingerprint"] = cv2.FaceRecognizerSF.create(str(fingerprint_file), "")
 
         return _models["finder"], _models["fingerprint"]
+    finally:
+        _model_lock.release()
 
 
 def fingerprint(jpeg):
@@ -145,7 +168,10 @@ def fingerprint(jpeg):
 
     finder, recogniser = _ready()
 
-    with _model_lock:
+    if not _model_lock.acquire(timeout=MODEL_WAIT):
+        raise TimeoutError(f"the models are still busy after {MODEL_WAIT:.0f} s")
+
+    try:
         finder.setInputSize((picture.shape[1], picture.shape[0]))
         _count, found = finder.detect(picture)
 
@@ -154,6 +180,8 @@ def fingerprint(jpeg):
 
         cut = recogniser.alignCrop(picture, found[0])
         feature = recogniser.feature(cut)
+    finally:
+        _model_lock.release()
 
     return _unit(feature)
 
@@ -205,9 +233,11 @@ def take(toy, jpeg, hour, now=None):
 
     if lesson:
         if feature is None:
+            _say(f"learning {lesson['name']}: no single clear face in that picture")
             return None
 
         lesson["features"].append(feature)
+        _say(f"learning {lesson['name']}: {len(lesson['features'])} of {LEARN_FROM} faces")
 
         if len(lesson["features"]) < LEARN_FROM:
             return None
@@ -218,9 +248,11 @@ def take(toy, jpeg, hour, now=None):
         return _finish(toy, lesson)
 
     if feature is None:
+        _say("no single clear face in that picture")
         return None
 
-    name, _score = who(toy, feature)
+    name, score = who(toy, feature)
+    _say(f"{name} ({score:.2f})" if name else f"a face I don't know (closest {score:.2f})")
 
     with _lock:
         _last_seen[toy] = (name, now)
@@ -244,6 +276,8 @@ def _finish(toy, lesson):
 
         if others and sum(others) / len(others) >= LEARN_LIKE_THE_REST:
             kept.append(feature)
+
+    _say(f"learning {name}: {len(kept)} of {len(features)} faces alike")
 
     if len(kept) < LEARN_FROM - 1:
         return f"I couldn't get a clear look at you, {name}. Let's try again in better light."
@@ -274,11 +308,18 @@ def learning_timed_out(toy, now=None):
 
 # ---- what is said to it -------------------------------------------------------------------------
 
-_NAME = r"([a-z][a-z' -]{0,%d})" % (NAME_MOST - 1)
-_LEARN = re.compile(r"^(?:please\s+)?(?:learn|remember|save)\s+my\s+face(?:\s+please)?"
-                    r"(?:\s+(?:my\s+name\s+is|my\s+names|i\s+am|im|its|call\s+me|this\s+is)\s+" + _NAME + r")?$")
-_LEARN_NAMED = re.compile(r"^(?:my\s+name\s+is|my\s+names|i\s+am|im|this\s+is)\s+" + _NAME +
-                          r"\s+(?:please\s+)?(?:learn|remember|save)\s+my\s+face(?:\s+please)?$")
+_NAME = r"([a-z][a-z' -]{0,%d}?)" % (NAME_MOST - 1)
+# Said casually, and as Whisper writes it: "learned my face", "can you learn my face please",
+# "remember me, I'm Sarah", "learn my face now, my name's Sarah".
+_ASKING = r"(?:(?:please|can|could|will|would|you|i|want|wanna|need|id|like|to|go|on|ok|okay|hey|right|now|so|and)\s+)*"
+_LEARN_VERB = r"(?:learn|learns|learned|learnt|learning|remember|remembers|save|memori[sz]e|scan|study)"
+_LEARN_WHAT = r"(?:my\s+face|me|my\s+face\s+and\s+name|who\s+i\s+am|what\s+i\s+look\s+like)"
+_POLITE = r"(?:\s+(?:please|now|again|for\s+me))*"
+_CALLED = r"(?:my\s+name\s+is|my\s+names|i\s+am|im|its|its\s+me|call\s+me|this\s+is|i\s+go\s+by)"
+_LEARN = re.compile("^" + _ASKING + _LEARN_VERB + r"\s+" + _LEARN_WHAT + _POLITE +
+                    r"(?:\s+(?:and\s+|so\s+)?(?:" + _CALLED + r"\s+)?" + _NAME + ")?" + _POLITE + "$")
+_LEARN_NAMED = re.compile(r"^(?:hi\s+|hello\s+)?" + _CALLED + r"\s+" + _NAME + r"\s+(?:and\s+|so\s+)?" +
+                          _ASKING + _LEARN_VERB + r"\s+" + _LEARN_WHAT + _POLITE + "$")
 _FORGET_MINE = re.compile(r"^(?:please\s+)?forget\s+my\s+face(?:\s+please)?$")
 _FORGET_ALL = re.compile(r"^(?:please\s+)?forget\s+(?:everyone|everybody|all\s+(?:the\s+)?faces"
                          r"|everyones\s+faces?|every\s+face)(?:\s+please)?$")
@@ -340,6 +381,8 @@ def handle(toy, what, name, now=None):
 
         with _lock:
             _learning[toy] = {"name": name, "until": now + LEARN_SECONDS, "features": []}
+
+        _say(f"learning {name}: asking the toy for faces")
 
         return f"Look at me for a few seconds, {name}, in good light.", LEARN_FROM + 2
 

@@ -13,6 +13,10 @@ PC JARVIS keeps everything else: reports, trading, files, face names.
 ## Endpoints
 
 - `GET /health`: `{"ok": true}`. For Render's health check and UptimeRobot.
+  `/health?detail=1` adds the memory, the face models (`ready`, or what they are doing and for how
+  long), and which process answered with its parent: open it in a browser, no laptop needed.
+  Every face the toy sends is logged as `faces (process): ...`, learning or recognising, and a face
+  waits at most 20 s for busy models instead of hanging the toy.
 - `POST /toy/talk`: the same contract as PC JARVIS's `phone.py`. A WAV in (16 kHz mono 16-bit)
   with `X-Jarvis-Token`, `X-Jarvis-Camera` and `X-Jarvis-Toy` (`button` or `sound`); raw PCM out
   (`audio/L16; rate=16000`) with `X-Jarvis-Mood` (`affection` or `normal`), or 204 to stay silent.
@@ -70,6 +74,8 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   fingerprinted here (OpenCV's YuNet and SFace, fetched on first use and checked by SHA-256), and
   kept as Sarah's. Anyone can, each by their own name. A known face coming into view is greeted
   by name, once in ten minutes. A stranger's face is compared and let go, never kept.
+- Said casually too: "learned my face" (as Whisper often hears it), "can you remember me, I'm Sarah",
+  "I'm Sarah, learn my face please", "remember my face, Sarah".
 - "Who am I", "who do you know", "forget my face", "forget Sarah", "forget everyone".
 - "Jarvis, I live in Leeds": kept, and used for the time and the weather before any guess.
 - "What can you see", "is anyone there": from the toy's last report, and who, if it knows them.

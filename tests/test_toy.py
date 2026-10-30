@@ -632,6 +632,17 @@ def fresh_faces(monkeypatch):
     ("Jarvis, learn my face. My name is Umer.", ("learn", "Umer")),
     ("my name is mary jane, remember my face", ("learn", "Mary Jane")),
     ("learn my face", ("learn", None)),
+    ("Jarvis, learned my face, I'm Umer.", ("learn", "Umer")),
+    ("Jarvis can you learn my face please, I'm Umer", ("learn", "Umer")),
+    ("could you remember me? My name's Umer.", ("learn", "Umer")),
+    ("learn my face now my name is Umer please", ("learn", "Umer")),
+    ("ok jarvis learn my face", ("learn", None)),
+    ("remember my face, Umer", ("learn", "Umer")),
+    ("learn my face please", ("learn", None)),
+    ("do you remember me", None),
+    ("I'm Umer, learn my face", ("learn", "Umer")),
+    ("hi I'm Umer, can you remember my face", ("learn", "Umer")),
+    ("learning my face, it's Umer", ("learn", "Umer")),
     ("forget my face", ("forget", None)),
     ("forget Sarah's face", ("forget", "Sarah")),
     ("forget Sarah", ("forget", "Sarah")),
@@ -936,7 +947,7 @@ def test_health_detail_for_a_browser(client, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     assert client.get("/health").get_json() == {"ok": True}
     detail = client.get("/health?detail=1").get_json()
-    assert detail["memory"] == "memory only" and detail["faces"] in ("ready", "loading")
+    assert detail["memory"] == "memory only" and (detail["faces"] == "ready" or " for " in detail["faces"])
 
 
 def test_face_model_status_says_why(monkeypatch, fresh_faces):
@@ -961,4 +972,32 @@ def test_cv2_is_imported_once_on_the_main_thread():
 
 def test_health_says_which_copy_answered(client):
     detail = client.get("/health?detail=1").get_json()
-    assert detail["process"] == os.getpid() and detail["up_seconds"] >= 0
+    assert detail["process"] == os.getpid() and detail["parent"] == os.getppid() and detail["up_seconds"] >= 0
+
+
+def test_face_status_says_what_it_is_doing_and_for_how_long(monkeypatch, fresh_faces):
+    monkeypatch.setattr(faces, "_models", {})
+    faces._step("loading the finder")
+    assert faces.status().startswith("loading the finder for ") and faces.status().endswith(" s")
+
+
+def test_a_face_never_waits_forever_for_busy_models(monkeypatch, fresh_faces):
+    """A warm-up stuck holding the models must not hang every face (and the toy) behind it."""
+    monkeypatch.setattr(faces, "MODEL_WAIT", 0.05)
+    monkeypatch.setattr(faces, "_models", {})
+    faces._model_lock.acquire()
+
+    try:
+        with pytest.raises(TimeoutError):
+            faces._ready()
+    finally:
+        faces._model_lock.release()
+
+
+def test_every_face_is_logged_with_its_process(monkeypatch, fresh_faces, capsys):
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: None)
+    faces.handle("toy", "learn", "Umer", now=0.0)
+    faces.take("toy", b"x", 9, now=1.0)
+    out = capsys.readouterr().out
+    assert f"faces ({os.getpid()}): learning Umer: asking the toy for faces" in out
+    assert "learning Umer: no single clear face in that picture" in out

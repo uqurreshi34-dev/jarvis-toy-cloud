@@ -272,7 +272,7 @@ def health():
     models are loaded: open it in a browser to check the toy's cloud without a laptop."""
     if request.args.get("detail"):
         return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status(),
-                        "process": os.getpid(), "up_seconds": round(time.monotonic() - _STARTED)})
+                        "process": os.getpid(), "parent": os.getppid(), "up_seconds": round(time.monotonic() - _STARTED)})
 
     return jsonify({"ok": True})
 
@@ -386,6 +386,10 @@ def camera_face():
 
     return jsonify({"ok": True, "say": False}), 200
 
+
+# Which process this is, in the log: one process must answer the toy, or a face lesson begun in one
+# never hears the faces sent to another.
+print(f"[toy-cloud] started: process {os.getpid()}, parent {os.getppid()}", flush=True)
 
 # The face models loaded before the first face arrives, not while it waits.
 if os.getenv("TOY_WARM_UP", "1") != "0":
