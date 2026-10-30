@@ -61,6 +61,8 @@ LEARN_SECONDS = 60.0
 
 FINDER_SURE = 0.6
 GREET_AGAIN = 600.0
+# Back after this long out of sight (the toy sends a face in view each minute): "I can see you, Umer."
+BACK_AFTER = 90.0
 NAME_MOST = 30
 
 _lock = threading.Lock()          # who is learning, seen, greeted: held only for a moment
@@ -69,6 +71,7 @@ _models = {}
 _learning = {}    # toy -> {"name", "until", "features": []}
 _last_seen = {}   # toy -> (name or None, monotonic time)
 _greeted = {}     # (toy, name) -> monotonic time
+_seen_at = {}     # (toy, name) -> monotonic time their face last came
 
 
 # ---- the models ---------------------------------------------------------------------------------
@@ -291,12 +294,23 @@ def take(toy, jpeg, hour, now=None):
     with _lock:
         _last_seen[toy] = (name, now)
 
-        if not name or now - _greeted.get((toy, name), -GREET_AGAIN - 1) < GREET_AGAIN:
+        if not name:
             return None
+
+        last = _seen_at.get((toy, name))
+        _seen_at[(toy, name)] = now
+
+        if now - _greeted.get((toy, name), -GREET_AGAIN - 1) < GREET_AGAIN:
+            return back_words(name) if last is None or now - last >= BACK_AFTER else None
 
         _greeted[(toy, name)] = now
 
     return greeting(name, hour)
+
+
+def back_words(name):
+    """Said when someone known comes back before it is time to greet them again."""
+    return f"I can see you, {name}."
 
 
 def _finish(toy, lesson):
@@ -491,6 +505,7 @@ def forget_state():
         _learning.clear()
         _last_seen.clear()
         _greeted.clear()
+        _seen_at.clear()
 
 
 if __name__ == "__main__":

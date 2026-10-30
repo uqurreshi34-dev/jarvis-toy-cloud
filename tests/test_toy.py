@@ -1106,3 +1106,24 @@ def test_on_the_toy_a_stranger_is_someone_at_once(client, fresh_faces, fresh_sig
     see(client, report("person"))
     assert client.post("/camera/face", data=b"\xff\xd8x", headers=headers).get_json()["say"] is True
     assert announce(client).data == b"I can see someone, sir."
+
+
+def test_back_after_a_while_is_named_even_when_greeted_lately(fresh_faces, monkeypatch):
+    """30 October 2026: taught, walked off, came back: nothing said, as he had been greeted lately."""
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
+    faces._greeted[("toy cam", "Umer")] = 0.0
+    assert faces.take("toy cam", b"jpg", 21, now=10.0) == "I can see you, Umer."
+    assert faces.take("toy cam", b"jpg", 21, now=70.0) is None, "still here: sent again each minute"
+    assert faces.take("toy cam", b"jpg", 21, now=70.0 + faces.BACK_AFTER + 1) == "I can see you, Umer."
+    assert faces.take("toy cam", b"jpg", 21, now=faces.GREET_AGAIN + 500.0).startswith("Good evening")
+
+
+def test_back_words_are_not_a_greeting_to_merge(client, fresh_faces, fresh_sight, monkeypatch):
+    store.add_faces("toy cam", "Umer", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
+    faces._greeted[("toy cam", "Umer")] = time_now()
+    headers = {"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam", "Content-Type": "image/jpeg"}
+    see(client, report("person", "cup"))
+    client.post("/camera/face", data=b"\xff\xd8x", headers=headers)
+    assert announce(client).data == b"I can see you, Umer, and a cup."

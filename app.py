@@ -386,7 +386,9 @@ def camera_face():
     after = faces.last_seen(name)
 
     if after is not None and after is not before:
-        if seen.face_arrived(name, after[0], said if after[0] else None) and after[0]:
+        greeting = said if after[0] and said != faces.back_words(after[0]) else None
+
+        if seen.face_arrived(name, after[0], greeting) and after[0]:
             said = None   # the greeting is in it
 
     if said:

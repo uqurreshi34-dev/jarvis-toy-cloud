@@ -62,6 +62,9 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   moment after its report: a known face makes it one sentence, "I can see you, Umer." (or "Good
   evening, Umer." when it is time for a greeting); a stranger's face, or the toy's next report with
   no face, lets "I can see someone, sir." go as it was.
+- The toy also looks for a face every 10 s in cloud mode, person or not, and sends one in view
+  each minute: someone known back after `BACK_AFTER` (90 s) out of sight hears "I can see you,
+  Umer." even when greeted lately, and "who am I" always has a recent face.
 - `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
   the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
 
