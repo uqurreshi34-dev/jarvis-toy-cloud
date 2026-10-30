@@ -1163,3 +1163,15 @@ def test_a_held_arrival_is_dropped_only_when_it_is_one_person(fresh_sight):
     seen.record("t", report(), now=300.0)
     seen.record("t", report("person", "person"), now=400.0)
     assert seen.drop_arrival("t", now=401.0) is False, "a second person is still news"
+
+
+def test_greeted_as_they_arrive_never_minutes_later_while_sitting_there(fresh_faces, monkeypatch):
+    """30 October 2026: 'Good evening, Umar' came at random minutes later, not as he walked in: the
+    toy sends a face each minute, and the first one after the ten-minute mark greeted him."""
+    store.add_faces("toy cam", "Umar", [vector(2)])
+    monkeypatch.setattr(faces, "fingerprint", lambda jpeg: vector(2, 0.2, 7))
+    assert faces.take("toy cam", b"jpg", 20, now=0.0) == "Good evening, Umar."
+    sitting = [faces.take("toy cam", b"jpg", 20, now=60.0 * n) for n in range(1, 30)]
+    assert sitting == [None] * 29, "half an hour at the desk: nothing said"
+    away_then_back = 60.0 * 29 + faces.BACK_AFTER + 1
+    assert faces.take("toy cam", b"jpg", 21, now=away_then_back) == "Good evening, Umar."

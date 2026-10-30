@@ -65,6 +65,8 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - The toy also looks for a face every 10 s in cloud mode, person or not, and sends one in view
   each minute: someone known back after `BACK_AFTER` (90 s) out of sight hears "I can see you,
   Umer." even when greeted lately, and "who am I" always has a recent face.
+- Greetings come only as someone comes into view (first seen, or back after `BACK_AFTER`), never
+  minutes later while they sit there.
 - `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
   the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
 

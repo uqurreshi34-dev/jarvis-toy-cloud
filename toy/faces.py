@@ -300,8 +300,13 @@ def take(toy, jpeg, hour, now=None):
         last = _seen_at.get((toy, name))
         _seen_at[(toy, name)] = now
 
+        # Only as they come into view (first seen, or back after BACK_AFTER out of sight): never
+        # because ten minutes have passed while they sat there (the toy sends a face each minute).
+        if last is not None and now - last < BACK_AFTER:
+            return None
+
         if now - _greeted.get((toy, name), -GREET_AGAIN - 1) < GREET_AGAIN:
-            return back_words(name) if last is None or now - last >= BACK_AFTER else None
+            return back_words(name)
 
         _greeted[(toy, name)] = now
 
