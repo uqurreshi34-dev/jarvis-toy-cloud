@@ -27,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from toy import brain, hearing, modes, seen, social, voice, wake
+from toy import brain, hearing, modes, seen, social, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -92,7 +92,43 @@ def mute_asked(text):
     return None
 
 
-def respond(wav, heard_by, toy):
+def _toy_address():
+    """The toy's public address as Render saw it (its first X-Forwarded-For), for where it is."""
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or request.remote_addr
+
+
+def answer_words(text, ip=None):
+    """(what to say, mood) for a command: thanks and affection, the time, the date and the weather
+    free; everything else the model's, searched first when it needs live information."""
+    which = social.kind(text)
+
+    if which:
+        return social.reply(which), "affection" if which in social.FOND_KINDS else ""
+
+    asked = world.time_asked(text)
+    where = None
+
+    if asked:
+        where = world.place(ip)
+        return world.time_words(asked, world.now(where)), ""
+
+    when = world.weather_asked(text)
+
+    if when:
+        where = world.place(ip)
+        said = world.weather_words(when, where)
+
+        if said:
+            return said, ""
+
+    where = where or world.place(ip)
+    moment = world.now(where)
+    today = f"{moment.strftime('%A')} {moment.day} {moment.strftime('%B %Y')}, {moment.strftime('%H:%M')}"
+    return brain.answer(text, today=today, city=where.get("city") or ""), ""
+
+
+def respond(wav, heard_by, toy, ip=None):
     """(what to say, mood, switch) for a recording, or (None, "", "") to stay silent. Mirrors phone.py's
     _toy_answer: hands-free speech is his only when it starts with his name or comes within a
     follow-up window; anything else is not his, and gets silence rather than a complaint."""
@@ -160,9 +196,7 @@ def respond(wav, heard_by, toy):
 
     print(f'[toy] heard "{text}"', flush=True)
 
-    which = social.kind(text)
-    mood = "affection" if which in social.FOND_KINDS else ""
-    said = social.reply(which) if which else brain.answer(text)
+    said, mood = answer_words(text, ip)
 
     toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS if hands_free else 0.0
     return said, mood, ""
@@ -222,7 +256,7 @@ def toy_talk():
     fell_back = (request.headers.get("X-Jarvis-Fallback") or "").strip().casefold() == "pc"
 
     try:
-        said, mood, switch = respond(request.get_data(cache=False), heard_by, toy)
+        said, mood, switch = respond(request.get_data(cache=False), heard_by, toy, _toy_address())
     except Exception as error:
         print(f"[toy-cloud] talk failed: {error}", flush=True)
         said, mood, switch = "Something went wrong there, sir.", "", ""

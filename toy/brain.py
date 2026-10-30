@@ -3,12 +3,19 @@
 LLM_PROVIDER picks who is asked first; the others follow in the usual order. A provider with no
 key is skipped, and one that fails hands the question to the next, so a single outage is not
 silence. The personality is JARVIS's, cut to what suits a toy: short, spoken, kind.
+
+Live questions (today's news, scores, tables, prices): searched first when they plainly are
+(search.live_asked); otherwise the model is asked, and may answer just SEARCH, when the question needs
+what it cannot know -- then it is searched and asked again with what was found. It is always told
+today's date and the town the toy is in, so "tomorrow", "this year" and "here" mean something.
 """
 
 import os
 import re
 
 import requests
+
+from toy import search
 
 PROVIDERS = {
     "groq": {
@@ -47,11 +54,25 @@ PERSONA = (
     "a speaker, a light ring and a head that turns. Whoever talks to you may be a child, so keep "
     "everything kind and suitable for all ages. Your answer is spoken aloud by the toy, so: reply "
     "in one to three short sentences, plain words, no lists, no markdown, no emojis, no links. "
-    "Address the person as sir. You cannot see live information such as today's news, scores, "
-    "league tables, prices or weather: if asked, say plainly you can't check that from the toy yet, "
-    "rather than guessing. You do not write reports, give trading advice or control the computer; "
+    "Address the person as sir. You do not write reports, give trading advice or control the computer; "
     "for those, say the desk JARVIS on the PC handles that."
 )
+
+# Without results: the model may ask for a search rather than guess.
+MAY_SEARCH = (
+    " If answering needs live or recent information you were not given -- news, sport results, league "
+    "tables, prices, who holds a position now, anything after your training -- reply with exactly the "
+    "single word SEARCH and nothing else. Otherwise answer."
+)
+
+# With results: answer from them.
+FROM_RESULTS = (
+    " Below are web search results gathered just now. Answer from them, briefly and plainly; if they do "
+    "not answer the question, say you couldn't find that out just now. Never mention searching or results."
+)
+
+SEARCH = "SEARCH"
+
 
 
 def order():
@@ -66,7 +87,7 @@ def order():
     return names
 
 
-def _ask(name, question):
+def _ask(name, question, system=PERSONA):
     config = PROVIDERS[name]
     key = (os.getenv(config["key_env"]) or "").strip()
 
@@ -76,7 +97,7 @@ def _ask(name, question):
     body = {
         "model": (os.getenv(config["model_env"]) or config["default_model"]).strip(),
         "messages": [
-            {"role": "system", "content": PERSONA},
+            {"role": "system", "content": system},
             {"role": "user", "content": question},
         ],
         "max_tokens": MAX_TOKENS,
@@ -113,11 +134,11 @@ def spoken(text):
     return " ".join(text.split())
 
 
-def answer(question):
-    """The toy's answer to [question], or a short apology when every provider failed."""
+def _first(question, system):
+    """The first provider's answer to [question], or None when every one failed."""
     for name in order():
         try:
-            said = _ask(name, question)
+            said = _ask(name, question, system)
         except Exception as error:
             print(f"[toy-cloud] {name} failed: {error}", flush=True)
             continue
@@ -125,4 +146,49 @@ def answer(question):
         if said:
             return said
 
-    return "I can't reach my thinking just now, sir. Try me again in a moment."
+    return None
+
+
+def _context(today, city):
+    lines = []
+
+    if today:
+        lines.append(f"Today is {today}.")
+
+    if city:
+        lines.append(f"The toy is in {city}.")
+
+    return (" " + " ".join(lines)) if lines else ""
+
+
+def _with_results(question, found, today, city):
+    shown = "\n".join(f"- {title}: {text}" for title, text in found)
+    return _first(question, PERSONA + _context(today, city) + FROM_RESULTS + "\n\nResults:\n" + shown)
+
+
+def answer(question, today="", city=""):
+    """The toy's answer to [question] -- searched first when it needs live information -- or a short
+    apology when every provider failed. [today] ("Friday 30 October 2026") and [city] are told to it."""
+    sorry = "I can't reach my thinking just now, sir. Try me again in a moment."
+    context = _context(today, city)
+
+    if search.live_asked(question):
+        found = search.search(f"{question} ({today})" if today else question)
+
+        if found:
+            return _with_results(question, found, today, city) or sorry
+
+    said = _first(question, PERSONA + context + MAY_SEARCH)
+
+    if said is None:
+        return sorry
+
+    if said.strip(" .").upper() != SEARCH:
+        return said
+
+    found = search.search(f"{question} ({today})" if today else question)
+
+    if not found:
+        return "I couldn't look that up just now, sir. Try me again in a moment."
+
+    return _with_results(question, found, today, city) or sorry

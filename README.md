@@ -54,6 +54,16 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
   the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
 
+## The time, the weather, and live questions
+
+- "What time is it", "what's the date": answered free, in the toy's own time zone.
+- "What's the weather", "will it rain tomorrow": Open-Meteo, free, where the toy is.
+- Where the toy is: a guess from its internet connection (ipapi.co, or ipwho.is), kept a day.
+  `TOY_PLACE` ("Leeds, GB") and `TOY_TIMEZONE` ("Europe/London"), when set, win.
+- Live questions ("who's top of the Premier League"): a Tavily search first when the question plainly
+  needs one, or when the model says it does (it answers just SEARCH); then answered from the results.
+  The model is always told today's date and the town.
+
 ## Trying it from the PC
 
 ```
@@ -72,6 +82,6 @@ python -m pytest -q
 1. Talk: done here.
 1b. PC mode and cloud mode; what the toy sees, said on the toy: done here.
 2. Memory that survives restarts (a free database).
-3. Web search and weather (where the toy is: a guess from its connection, or what it is told).
+3. Web search, the time and the weather: done here (telling it where it lives comes with memory).
 4. Announcements, including ones PC JARVIS sends.
 5. Hearing "Jarvis" on the chip itself.

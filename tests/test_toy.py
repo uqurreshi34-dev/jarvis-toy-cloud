@@ -22,7 +22,7 @@ def client(monkeypatch):
     toy_app._toys.clear()
     heard = {"text": ""}
     monkeypatch.setattr(toy_app.hearing, "transcribe", lambda wav: heard["text"])
-    monkeypatch.setattr(toy_app.brain, "answer", lambda text: f"answer to {text}")
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: f"answer to {text}")
     monkeypatch.setattr(toy_app.voice, "pcm16", lambda text: text.encode())
     test_client = toy_app.app.test_client()
     test_client.heard = heard
@@ -55,9 +55,9 @@ def test_only_wav_and_not_too_large(client):
 
 
 def test_hands_free_needs_his_name(client):
-    assert talk(client, "what time is it").status_code == 204
-    response = talk(client, "Jarvis, what time is it")
-    assert response.status_code == 200 and response.data == b"answer to what time is it"
+    assert talk(client, "what is the capital of Peru").status_code == 204
+    response = talk(client, "Jarvis, what is the capital of Peru")
+    assert response.status_code == 200 and response.data == b"answer to what is the capital of Peru"
     assert response.headers["Content-Type"].startswith("audio/L16; rate=16000")
     assert response.headers["X-Jarvis-Mood"] == "normal"
 
@@ -95,7 +95,7 @@ def test_mute_and_unmute(client):
 
 
 def test_affection_is_warm_free_and_red(client, monkeypatch):
-    monkeypatch.setattr(toy_app.brain, "answer", lambda text: pytest.fail("no model call for affection"))
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("no model call for affection"))
     response = talk(client, "Jarvis, I love you")
     assert response.headers["X-Jarvis-Mood"] == "affection"
     assert response.data.decode() in social.POOLS["love"]
@@ -151,7 +151,7 @@ def test_provider_order_follows_llm_provider(monkeypatch):
 def test_brain_falls_through_to_the_next_provider(monkeypatch):
     asked = []
 
-    def ask(name, question):
+    def ask(name, question, system=None):
         asked.append(name)
         if name == "groq":
             raise RuntimeError("rate limited")
@@ -163,7 +163,7 @@ def test_brain_falls_through_to_the_next_provider(monkeypatch):
 
 
 def test_brain_apologises_when_all_fail(monkeypatch):
-    monkeypatch.setattr(brain, "_ask", lambda name, question: None)
+    monkeypatch.setattr(brain, "_ask", lambda name, question, system=None: None)
     assert brain.answer("hi").startswith("I can't reach my thinking")
 
 
@@ -380,3 +380,212 @@ def test_face_is_taken_and_let_go(client):
     assert client.post("/camera/face", data=b"png", headers=headers).status_code == 400
     headers["X-Jarvis-Token"] = "nope"
     assert client.post("/camera/face", data=b"\xff\xd8", headers=headers).status_code == 403
+
+
+# ---- the time, the date, the weather, and live answers -----------------------------------------
+
+import datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from toy import search, world  # noqa: E402
+
+
+@pytest.mark.parametrize("said, asked", [
+    ("what time is it", "time"), ("What's the time?", "time"), ("what is the time please", "time"),
+    ("tell me the time", "time"), ("what's the date", "date"), ("what day is it today", "date"),
+    ("what's today's date", "date"), ("what time is it in Tokyo", None), ("time to go", None),
+])
+def test_time_asked(said, asked):
+    assert world.time_asked(said) == asked
+
+
+def test_time_words():
+    moment = datetime.datetime(2026, 10, 30, 18, 5, tzinfo=ZoneInfo("Europe/London"))
+    assert world.time_words("time", moment) == "It's 6:05 pm, sir."
+    assert world.time_words("time", moment.replace(hour=0)) == "It's 12:05 am, sir."
+    assert world.time_words("date", moment) == "It's Friday the 30th of October, sir."
+    assert world.time_words("date", moment.replace(day=22)) == "It's Thursday the 22nd of October, sir."
+
+
+def test_the_time_is_free_and_local(client, monkeypatch):
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("no model call for the time"))
+    monkeypatch.setattr(world, "place", lambda ip=None: {"city": "Birmingham", "lat": 52.5, "lon": -1.9,
+                                                        "timezone": "Europe/London"})
+    said = talk(client, "Jarvis, what time is it").data.decode()
+    assert said.startswith("It's ") and said.endswith(("am, sir.", "pm, sir."))
+
+
+def test_zone_falls_back(monkeypatch):
+    monkeypatch.delenv("TOY_TIMEZONE", raising=False)
+    assert world.zone({"timezone": "Asia/Tokyo"}).key == "Asia/Tokyo"
+    assert world.zone({"timezone": "Not/AZone"}).key == world.DEFAULT_TIMEZONE
+    assert world.zone(None).key == world.DEFAULT_TIMEZONE
+    monkeypatch.setenv("TOY_TIMEZONE", "America/New_York")
+    assert world.zone({"timezone": "Asia/Tokyo"}).key == "America/New_York"
+
+
+@pytest.mark.parametrize("said, when", [
+    ("what's the weather like", "today"), ("will it rain tomorrow", "tomorrow"),
+    ("do I need an umbrella today", "today"), ("what's the weather in Paris", None), ("tell me a joke", None),
+])
+def test_weather_asked(said, when):
+    assert world.weather_asked(said) == when
+
+
+class Answer:
+    def __init__(self, data, status=200):
+        self.status_code = status
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+def test_weather_words(monkeypatch):
+    sent = {}
+
+    def get(url, timeout=None, params=None, headers=None):
+        sent.update(url=url, params=params)
+        return Answer({"current": {"temperature_2m": 11.6},
+                       "daily": {"weather_code": [61, 0], "temperature_2m_max": [13.2, 15.0],
+                                 "temperature_2m_min": [7.4, 6.0], "precipitation_probability_max": [80, 10]}})
+
+    monkeypatch.setattr(world.requests, "get", get)
+    where = {"city": "Birmingham", "lat": 52.48, "lon": -1.89, "timezone": "Europe/London"}
+    assert world.weather_words("today", where) == (
+        "It's 12 degrees in Birmingham now, sir, with light rain today: a high of 13 and a low of 7, "
+        "with a 80 percent chance of rain.")
+    assert world.weather_words("tomorrow", where) == (
+        "Tomorrow in Birmingham, sir, expect clear skies: a high of 15 and a low of 6.")
+    assert sent["url"] == world.WEATHER_URL and sent["params"]["latitude"] == 52.48
+    assert world.weather_words("today", {"city": None, "lat": None, "lon": None}) is None
+
+
+def test_place_from_the_toys_address_is_kept(monkeypatch):
+    world.forget()
+    monkeypatch.delenv("TOY_PLACE", raising=False)
+    calls = []
+
+    def get(url, timeout=None, params=None, headers=None):
+        calls.append(url)
+        return Answer({"city": "Birmingham", "latitude": 52.48, "longitude": -1.89, "timezone": "Europe/London"})
+
+    monkeypatch.setattr(world.requests, "get", get)
+    assert world.place("81.2.69.160")["city"] == "Birmingham"
+    assert world.place("81.2.69.160")["timezone"] == "Europe/London" and len(calls) == 1
+    assert world.place("10.0.0.5") == {"city": None, "lat": None, "lon": None, "timezone": None}
+    assert len(calls) == 1
+    world.forget()
+
+
+def test_toy_place_setting_wins(monkeypatch):
+    world.forget()
+    monkeypatch.setenv("TOY_PLACE", "Leeds, GB")
+
+    def get(url, timeout=None, params=None, headers=None):
+        assert url == world.GEOCODE_URL and params["name"] == "Leeds" and params["countryCode"] == "GB"
+        return Answer({"results": [{"name": "Leeds", "latitude": 53.8, "longitude": -1.55,
+                                    "timezone": "Europe/London"}]})
+
+    monkeypatch.setattr(world.requests, "get", get)
+    assert world.place("81.2.69.160")["city"] == "Leeds"
+    world.forget()
+
+
+def test_the_weather_is_free(client, monkeypatch):
+    monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: pytest.fail("no model call"))
+    monkeypatch.setattr(world, "place", lambda ip=None: {"city": "Birmingham", "lat": 1, "lon": 2,
+                                                        "timezone": "Europe/London"})
+    monkeypatch.setattr(world, "weather_words", lambda when, where: f"Weather {when}.")
+    assert talk(client, "Jarvis, will it rain tomorrow").data == b"Weather tomorrow."
+
+
+def test_the_toys_address_is_its_forwarded_one(client, monkeypatch):
+    seen_ips = []
+    monkeypatch.setattr(world, "place", lambda ip=None: seen_ips.append(ip) or
+                        {"city": None, "lat": None, "lon": None, "timezone": None})
+    client.heard["text"] = "Jarvis, what time is it"
+    client.post("/toy/talk", data=SPEECH, headers={
+        "X-Jarvis-Token": TOKEN, "Content-Type": "audio/wav", "X-Jarvis-Toy": "sound",
+        "X-Jarvis-Camera": "toy cam", "X-Forwarded-For": "81.2.69.160, 10.1.2.3"})
+    assert seen_ips == ["81.2.69.160"]
+
+
+@pytest.mark.parametrize("said, live", [
+    ("who is top of the premier league", True), ("what's the latest news", True),
+    ("who won the match yesterday", True), ("what's the price of bitcoin", True),
+    ("what is the capital of France", False), ("tell me a joke", False),
+])
+def test_live_asked(said, live):
+    assert search.live_asked(said) is live
+
+
+def test_live_question_is_searched_then_answered(monkeypatch):
+    asked = []
+    monkeypatch.setattr(search, "search", lambda query: asked.append(query) or [("Table", "Arsenal top on 25")])
+    monkeypatch.setattr(brain, "_first", lambda question, system: "Arsenal, sir." if "Arsenal top" in system else None)
+    said = brain.answer("who is top of the premier league", today="Friday 30 October 2026", city="Birmingham")
+    assert said == "Arsenal, sir." and asked == ["who is top of the premier league (Friday 30 October 2026)"]
+
+
+def test_model_may_ask_for_a_search(monkeypatch):
+    systems = []
+
+    def first(question, system):
+        systems.append(system)
+        return "SEARCH" if len(systems) == 1 else "Mr Smith, sir."
+
+    monkeypatch.setattr(brain, "_first", first)
+    monkeypatch.setattr(search, "search", lambda query: [("News", "Mr Smith became mayor")])
+    assert brain.answer("who is the mayor of the west midlands", today="Friday 30 October 2026") == "Mr Smith, sir."
+    assert brain.MAY_SEARCH in systems[0] and "Today is Friday 30 October 2026." in systems[0]
+    assert "Mr Smith became mayor" in systems[1] and brain.MAY_SEARCH not in systems[1]
+
+
+def test_no_search_needed_is_one_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(brain, "_first", lambda question, system: calls.append(1) or "Paris, sir.")
+    monkeypatch.setattr(search, "search", lambda query: pytest.fail("no search"))
+    assert brain.answer("what is the capital of France") == "Paris, sir." and calls == [1]
+
+
+def test_search_unavailable_is_said(monkeypatch):
+    monkeypatch.setattr(brain, "_first", lambda question, system: "SEARCH")
+    monkeypatch.setattr(search, "search", lambda query: [])
+    assert brain.answer("who is the mayor").startswith("I couldn't look that up")
+
+
+def test_tavily_request_and_rest(monkeypatch):
+    search.rest_over()
+    sent = {}
+
+    def post(url, timeout=None, headers=None, json=None):
+        sent.update(url=url, headers=headers, json=json)
+        return Answer({"answer": "Arsenal lead.", "results": [{"title": "Table", "content": "Arsenal  25 pts"}]})
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tv")
+    monkeypatch.setattr(search.requests, "post", post)
+    assert search.search("top of the league") == [("Summary", "Arsenal lead."), ("Table", "Arsenal 25 pts")]
+    assert sent["headers"]["Authorization"] == "Bearer tv" and sent["json"]["include_answer"] is True
+    monkeypatch.setattr(search.requests, "post", lambda *a, **k: Answer({}, status=432))
+    assert search.search("x") == []
+    monkeypatch.setattr(search.requests, "post", lambda *a, **k: pytest.fail("resting"))
+    assert search.search("x") == []
+    search.rest_over()
+
+
+def test_place_from_the_spare_service_when_the_first_is_busy(monkeypatch):
+    world.forget()
+    monkeypatch.delenv("TOY_PLACE", raising=False)
+
+    def get(url, timeout=None, params=None, headers=None):
+        if "ipapi.co" in url:
+            return Answer({"error": True, "reason": "RateLimited"}, status=429)
+
+        return Answer({"success": True, "city": "Birmingham", "latitude": 52.48, "longitude": -1.89,
+                       "timezone": {"id": "Europe/London"}})
+
+    monkeypatch.setattr(world.requests, "get", get)
+    assert world.place("81.2.69.160") == {"city": "Birmingham", "lat": 52.48, "lon": -1.89,
+                                         "timezone": "Europe/London"}
+    world.forget()
