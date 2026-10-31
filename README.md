@@ -21,7 +21,8 @@ PC JARVIS keeps everything else: reports, trading, files, face names.
   imports the app in a parent process and forks the worker, and a worker forked mid-load inherited
   a lock nobody could release.
 - `POST /toy/talk`: the same contract as PC JARVIS's `phone.py`. A WAV in (16 kHz mono 16-bit)
-  with `X-Jarvis-Token`, `X-Jarvis-Camera` and `X-Jarvis-Toy` (`button` or `sound`); raw PCM out
+  with `X-Jarvis-Token`, `X-Jarvis-Camera` and `X-Jarvis-Toy` (`button`, `sound`, or `wake` when
+  the toy heard "Jarvis" on its own chip, so the name need not be in the audio); raw PCM out
   (`audio/L16; rate=16000`) with `X-Jarvis-Mood` (`affection` or `normal`), or 204 to stay silent.
 
 ## Settings (Render, Environment)

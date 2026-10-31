@@ -163,7 +163,10 @@ def respond(wav, heard_by, toy, ip=None):
     """(what to say, mood, switch) for a recording, or (None, "", "") to stay silent. Mirrors phone.py's
     _toy_answer: hands-free speech is his only when it starts with his name or comes within a
     follow-up window; anything else is not his, and gets silence rather than a complaint."""
-    hands_free = heard_by == "sound"
+    # "wake": the toy heard "Jarvis" on its own chip, in this recording or just before it began, so
+    # the name may not be in the audio at all (31 October 2026): his, without looking for it again.
+    board_heard = heard_by == "wake"
+    hands_free = heard_by in ("sound", "wake")
     following = hands_free and time.monotonic() < toy["follow_until"]
 
     if len(wav) < MIN_VOICE_BYTES:
@@ -181,11 +184,14 @@ def respond(wav, heard_by, toy, ip=None):
     if hands_free and not following:
         command = wake.addressed_command(text)
 
+        if command is None and board_heard:
+            command = text
+
         if command is None:
             print(f'[ignored] "{text}" (not said to JARVIS)', flush=True)
             return None, "", ""
 
-        print(f'[toy] woken by "{text}"', flush=True)
+        print(f'[toy] woken by "{text}"{" (Jarvis heard on the toy)" if board_heard else ""}', flush=True)
 
         if not command:
             if toy["muted"]:

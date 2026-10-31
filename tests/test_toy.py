@@ -1193,3 +1193,17 @@ def test_greeted_as_they_arrive_never_minutes_later_while_sitting_there(fresh_fa
     assert sitting == [None] * 29, "half an hour at the desk: nothing said"
     away_then_back = 60.0 * 29 + faces.BACK_AFTER + 1
     assert faces.take("toy cam", b"jpg", 21, now=away_then_back) == "Good evening, Umar."
+
+
+def test_jarvis_heard_on_the_chip_is_his_even_without_the_name_in_the_audio(client, monkeypatch):
+    """31 October 2026: the toy heard 'Jarvis' on its own chip, said just before the recording began,
+    so Whisper heard only 'what time is it' -- and the cloud turned it away as not said to Jarvis."""
+    monkeypatch.setattr(world, "place", lambda ip=None, toy=None: {"city": "Birmingham", "lat": 1, "lon": 2,
+                                                                  "timezone": "Europe/London"})
+    toy_app._toys.clear()
+    assert talk(client, "what time is it").status_code == 204, "still turned away when only heard as sound"
+    answer = talk(client, "what time is it", how="wake")
+    assert answer.status_code == 200 and toy_app._toy("toy cam")["follow_until"] > 0
+    toy_app._toys.clear()
+    assert talk(client, "Jarvis", how="wake").status_code == 200, "his name alone, heard on the chip"
+    toy_app._toys.clear()
