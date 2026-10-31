@@ -10,6 +10,10 @@ from difflib import SequenceMatcher
 
 WAKE_WORD = "jarvis"
 
+# What the toy itself listens for on its chip, and so what it tells people to say ("Say Hey Jarvis,
+# unmute"): the toy's microWakeWord ear hears only this (31 October 2026).
+WAKE_PHRASE = "Hey Jarvis"
+
 # Speech engines render the name many ways: "jovis", "java's", "jervis". They share a
 # consonant skeleton ("jrvs" against "jvs"), so that is compared rather than a list of spellings.
 WAKE_SKELETON_RATIO = 0.70

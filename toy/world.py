@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from toy import store
+from toy.wake import WAKE_PHRASE
 
 IP_URL = "https://ipapi.co/{ip}/json/"
 IP_URL_SPARE = "https://ipwho.is/{ip}"
@@ -465,7 +466,7 @@ def learn_place(toy, town):
     return f"Noted, sir. I'll give you the time and weather for {found['city']}."
 
 
-UNKNOWN_PLACE = "I don't know where we are yet, sir. Tell me: Jarvis, I live in, and your town."
+UNKNOWN_PLACE = f"I don't know where we are yet, sir. Tell me: {WAKE_PHRASE}, I live in, and your town."
 
 
 def forget():

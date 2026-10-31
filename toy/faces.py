@@ -38,6 +38,7 @@ import numpy as np
 import requests
 
 from toy import store
+from toy.wake import WAKE_PHRASE
 
 ZOO = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
 MODELS = {
@@ -433,7 +434,7 @@ def handle(toy, what, name, now=None):
 
     if what == "learn":
         if not name:
-            return "Tell me your name too: say, Jarvis, learn my face, I'm, and your name.", 0
+            return f"Tell me your name too: say, {WAKE_PHRASE}, learn my face, I'm, and your name.", 0
 
         with _lock:
             _learning[toy] = {"name": name, "until": now + LEARN_SECONDS, "features": []}
@@ -456,7 +457,7 @@ def handle(toy, what, name, now=None):
             elif not known:
                 return "I don't know anyone's face yet.", 0
             else:
-                return "Whose face? Say, Jarvis, forget, and the name.", 0
+                return f"Whose face? Say, {WAKE_PHRASE}, forget, and the name.", 0
 
         match = next((person for person in known if person.casefold() == name.casefold()), None)
 
@@ -477,7 +478,7 @@ def handle(toy, what, name, now=None):
         if last[0]:
             return f"You're {last[0]}.", 0
 
-        return "I don't know you yet. Say, Jarvis, learn my face, I'm, and your name.", 0
+        return f"I don't know you yet. Say, {WAKE_PHRASE}, learn my face, I'm, and your name.", 0
 
     if what == "who_known":
         known = store.names(toy)

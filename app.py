@@ -222,7 +222,7 @@ def respond(wav, heard_by, toy, ip=None):
         toy["muted"] = True
         toy["follow_until"] = 0.0
         print("[toy] muted", flush=True)
-        return "Muted, sir. Say Jarvis, unmute, when you want me.", "", ""
+        return f"Muted, sir. Say {wake.WAKE_PHRASE}, unmute, when you want me.", "", ""
 
     switch = modes.switch_asked(text)
 

@@ -1207,3 +1207,21 @@ def test_jarvis_heard_on_the_chip_is_his_even_without_the_name_in_the_audio(clie
     toy_app._toys.clear()
     assert talk(client, "Jarvis", how="wake").status_code == 200, "his name alone, heard on the chip"
     toy_app._toys.clear()
+
+
+def test_the_toy_tells_people_to_say_hey_jarvis(client, fresh_faces, monkeypatch):
+    """31 October 2026: muted, it said 'Say Jarvis, unmute' -- but its ear only hears 'Hey Jarvis'."""
+    toy_app._toys.clear()
+    said = talk(client, "Jarvis, mute").data
+    toy_app._toys.clear()
+    assert wake.WAKE_PHRASE == "Hey Jarvis"
+    assert faces.handle("toy cam", "learn", None)[0] == "Tell me your name too: say, Hey Jarvis, learn my face, I'm, and your name."
+    store.add_faces("toy cam", "Sarah", [vector(1)])
+    store.add_faces("toy cam", "Umar", [vector(2)])
+    assert faces.handle("toy cam", "forget", None)[0] == "Whose face? Say, Hey Jarvis, forget, and the name."
+    assert said == b"Muted, sir. Say Hey Jarvis, unmute, when you want me."
+    assert "Tell me: Hey Jarvis, I live in" in world.UNKNOWN_PLACE
+    import glob
+    import re
+    sources = "".join(open(path, encoding="ascii").read() for path in glob.glob("toy/*.py") + ["app.py"])
+    assert not re.search(r"[Ss]ay,? Jarvis|Tell me: Jarvis", sources), "every instruction names what the ear hears"
