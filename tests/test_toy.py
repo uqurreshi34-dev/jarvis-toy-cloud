@@ -1256,7 +1256,8 @@ def test_a_station_by_name_then_by_genre_then_the_models_genre(monkeypatch):
 
     def get(url, params=None, timeout=None, headers=None):
         asked.append(dict(params))
-        found = {("name", "jazz"): [], ("tag", "jazz"): [station("Smooth Jazz", "https://jazz.example/live")],
+        found = {("name", "jazz"): [station("Lounge Ibiza - Chillout, Jazz, Ambient", "https://stuffed.example/x")],
+                 ("tag", "jazz"): [station("Smooth Jazz", "https://jazz.example/live")],
                  ("name", "something relaxing"): [], ("tag", "something relaxing"): [],
                  ("tag", "chillout"): [station("Chill", "https://chill.example/mp3")]}
         key = ("name", params["name"]) if "name" in params else ("tag", params["tag"])
@@ -1264,8 +1265,10 @@ def test_a_station_by_name_then_by_genre_then_the_models_genre(monkeypatch):
         return Answer(found.get(key, []))
 
     monkeypatch.setattr(radio.requests, "get", get)
-    assert radio.find("jazz") == {"name": "Smooth Jazz", "url": "https://jazz.example/live"}
+    assert radio.find("jazz") == {"name": "Smooth Jazz", "url": "https://jazz.example/live"}, \
+        "1 November 2026: a genre is a genre first, not a station name stuffed with genres"
     assert asked[0]["codec"] == "MP3" and asked[0]["is_https"] == "true" and asked[0]["hidebroken"] == "true"
+    assert asked[0]["tag"] == "jazz" and asked[0]["tagExact"] == "true"
     assert radio.find("something relaxing", genre_for=lambda what: "chillout")["name"] == "Chill"
     assert radio.find("nothing at all", genre_for=lambda what: None) is None
 
@@ -1295,3 +1298,22 @@ def test_play_on_the_toy_sends_the_station(client, monkeypatch):
 def test_the_models_genre_is_one_tag(monkeypatch):
     monkeypatch.setattr(brain, "_first", lambda question, system: "Chillout!")
     assert brain.genre("something relaxing") == "chillout"
+
+
+def test_a_station_by_name_when_no_genre_matches(monkeypatch):
+    def get(url, params=None, timeout=None, headers=None):
+        if "name" in params:
+            return Answer([station("Capital FM | London's No.1 Hit Music Station", "https://capital.example/mp3")])
+        return Answer([])
+
+    monkeypatch.setattr(radio.requests, "get", get)
+    assert radio.find("capital fm") == {"name": "Capital FM", "url": "https://capital.example/mp3"}
+
+
+@pytest.mark.parametrize("name, said", [
+    ("Lounge Ibiza - Chillout Lounge, Jazz, Ambient, Deep House", "Lounge Ibiza"),
+    ("Capital FM | London", "Capital FM"), ("Smooth Jazz (128k)", "Smooth Jazz"),
+    ("One Two Three Four Five Six Seven", "One Two Three Four Five"), ("", "a station"),
+])
+def test_station_names_are_said_short(name, said):
+    assert radio.spoken_name(name) == said

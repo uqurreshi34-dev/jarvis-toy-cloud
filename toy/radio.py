@@ -6,9 +6,12 @@ stations, each broadcasting under its own licence -- how internet radios work. T
 stream itself (its chip decodes MP3), so only the station's address goes to it, in X-Jarvis-Play;
 "pause", "resume" and "stop" go the same way. Nothing here is kept.
 
-A request is looked up as a station's name first, then as a genre (a station tag), and only if both
-find nothing does the model turn it into a genre ("something relaxing" -> "chillout"): no list of
-genres or stations is kept here. Only MP3 streams over HTTPS that Radio Browser last found working,
+A request is looked up as a genre first (a station tagged exactly so: "jazz"), then as a station's
+name ("Capital FM"), and only if both find nothing does the model turn it into a genre ("something
+relaxing" -> "chillout"): no list of genres or stations is kept here. Names first had "play some
+jazz" pick "Lounge Ibiza Chillout Lounge ... Jazz ...", a name stuffed with genres to be found, and
+read it all out for nine seconds (1 November 2026); a name is said only up to its first dash, bar,
+comma or bracket, at most SPOKEN_WORDS words. Only MP3 streams over HTTPS that Radio Browser last found working,
 not HLS, at most MAX_BITRATE kbps, most listened to first.
 
 TOY_RADIO_SERVERS: Radio Browser's servers to ask, in turn (comma-separated), when the default
@@ -26,6 +29,7 @@ USER_AGENT = "jarvis-toy-cloud/1.0 (+https://github.com/uqurreshi34-dev/jarvis-t
 TIMEOUT = (5, 10)
 MAX_BITRATE = 192
 LIMIT = 20
+SPOKEN_WORDS = 5
 
 _PLAY = re.compile(
     r"^(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?(?:play|put\s+on|stream|start\s+playing)\s+"
@@ -112,11 +116,18 @@ def _playable(station):
             and station.get("lastcheckok", 1) in (1, True, "1"))
 
 
+def spoken_name(name):
+    """A station's name as said: up to its first dash, bar, comma, colon or bracket, a few words."""
+    name = re.split(r"\s[-|~]\s|[|,:(\[]|\s-\s", str(name or ""))[0]
+    words = name.split()[:SPOKEN_WORDS]
+    return " ".join(words) or "a station"
+
+
 def _first_playable(stations):
     for station in stations:
         if isinstance(station, dict) and _playable(station):
-            name = " ".join(str(station.get("name") or "a station").split())[:80]
-            return {"name": name, "url": str(station.get("url_resolved") or station.get("url")).strip()}
+            return {"name": spoken_name(station.get("name")),
+                    "url": str(station.get("url_resolved") or station.get("url")).strip()}
 
     return None
 
@@ -129,25 +140,25 @@ def find(what, genre_for=None):
     if not what:
         return None
 
-    station = _first_playable(_search(name=what))
-
-    if station:
-        return station
-
     genre = _FILLER.sub(" ", what.casefold())
     genre = " ".join(genre.split())
 
     if genre:
-        station = _first_playable(_search(tag=genre))
+        station = _first_playable(_search(tag=genre, tagExact="true"))
 
         if station:
             return station
+
+    station = _first_playable(_search(name=what))
+
+    if station:
+        return station
 
     if genre_for:
         guess = " ".join(str(genre_for(what) or "").casefold().split())[:40]
 
         if guess and guess != genre:
             print(f"[toy-cloud] radio: {what!r} taken as the genre {guess!r}", flush=True)
-            return _first_playable(_search(tag=guess))
+            return _first_playable(_search(tag=guess, tagExact="true"))
 
     return None

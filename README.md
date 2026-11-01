@@ -103,8 +103,8 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 ## Music
 
 - "Hey Jarvis, play some jazz" / "play Capital FM" / "play a Quran station" / "play something relaxing":
-  internet radio from Radio Browser's free directory (`toy/radio.py`), a station's name first, then a
-  genre, and only then the model's genre for the words. Only MP3 over HTTPS, working, not HLS, at most
+  internet radio from Radio Browser's free directory (`toy/radio.py`), a genre first (an exact tag),
+  then a station's name, and only then the model's genre for the words; a name is said short. Only MP3 over HTTPS, working, not HLS, at most
   192 kbps, most listened to first. The toy gets the address in `X-Jarvis-Play` and plays the stream
   itself; "pause", "resume" and "stop" go the same way. `TOY_RADIO_SERVERS` overrides the servers.
 
