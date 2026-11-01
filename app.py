@@ -27,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from toy import brain, faces, hearing, modes, seen, social, store, voice, wake, world
+from toy import brain, faces, hearing, modes, radio, seen, social, store, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -69,7 +69,7 @@ def _toy(name):
     with _toys_lock:
         name = name or "toy"
         return _toys.setdefault(name, {"name": name, "muted": False, "follow_until": 0.0, "fallback_said": None,
-                                       "faces_wanted": 0})
+                                       "faces_wanted": 0, "play": ""})
 
 
 def _authorised():
@@ -101,6 +101,30 @@ def _toy_address():
     return forwarded or request.remote_addr
 
 
+PLAY_WORDS = {
+    "pause": "Paused, sir.",
+    "resume": "Carrying on, sir.",
+    "stop": "Stopped, sir.",
+}
+
+
+def play_words(toy, what, asked_for=None):
+    """What to say about a music request, telling the toy what to do (toy["play"], sent as
+    X-Jarvis-Play): a station's address to play, or "pause", "resume" or "stop"."""
+    if what != "play":
+        toy["play"] = what
+        return PLAY_WORDS[what]
+
+    station = radio.find(asked_for, genre_for=brain.genre)
+
+    if not station:
+        return f"I couldn't find a station for {asked_for}, sir."
+
+    toy["play"] = station["url"]
+    print(f"[toy-cloud] radio: {asked_for!r} -> {station['name']} ({station['url']})", flush=True)
+    return f"Playing {station['name']}, sir."
+
+
 def answer_words(text, ip=None, toy=None):
     """(what to say, mood) for a command: thanks and affection, faces, where it lives, the time, the
     date and the weather free; everything else the model's, searched first when it needs live
@@ -111,6 +135,11 @@ def answer_words(text, ip=None, toy=None):
 
     if which:
         return social.reply(which), "affection" if which in social.FOND_KINDS else ""
+
+    music = radio.asked(text)
+
+    if music:
+        return play_words(toy, *music), ""
 
     face = faces.asked(text)
 
@@ -251,7 +280,7 @@ def _fallback_note(toy, now=None):
     return FALLBACK_WORDS
 
 
-def _pcm_response(said, mood="", switch="", faces_wanted=0):
+def _pcm_response(said, mood="", switch="", faces_wanted=0, play=""):
     data = voice.pcm16(said)
 
     if not data:
@@ -268,6 +297,9 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0):
 
     if faces_wanted:
         headers["X-Jarvis-Faces"] = str(faces_wanted)
+
+    if play:
+        headers["X-Jarvis-Play"] = play
 
     return data, 200, headers
 
@@ -316,7 +348,8 @@ def toy_talk():
         said = f"{note} {said}" if note else said
 
     wanted, toy["faces_wanted"] = toy["faces_wanted"], 0
-    return _pcm_response(said, mood, switch, wanted)
+    play, toy["play"] = toy.get("play", ""), ""
+    return _pcm_response(said, mood, switch, wanted, play)
 
 
 # A known face this recent means a person coming into view is still them.

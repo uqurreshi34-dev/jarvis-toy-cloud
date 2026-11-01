@@ -100,6 +100,14 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - "What can you see", "is anyone there": from the toy's last report, and who, if it knows them.
 - Kept in Postgres at `DATABASE_URL` (Neon's free plan). Without it, in memory until restart.
 
+## Music
+
+- "Hey Jarvis, play some jazz" / "play Capital FM" / "play a Quran station" / "play something relaxing":
+  internet radio from Radio Browser's free directory (`toy/radio.py`), a station's name first, then a
+  genre, and only then the model's genre for the words. Only MP3 over HTTPS, working, not HLS, at most
+  192 kbps, most listened to first. The toy gets the address in `X-Jarvis-Play` and plays the stream
+  itself; "pause", "resume" and "stop" go the same way. `TOY_RADIO_SERVERS` overrides the servers.
+
 ## Trying it from the PC
 
 ```

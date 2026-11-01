@@ -238,3 +238,22 @@ def answer(question, today="", city=""):
         return said
 
     return _searched(question, today, city) or sorry
+
+
+GENRE = (
+    "The user asked a toy to play some music on internet radio. Reply with the one music genre, as a "
+    "radio station tag of one or two lowercase words (for example: jazz, chillout, classical, pop, "
+    "quran), that best fits what they asked for. Reply with only the tag."
+)
+
+
+def genre(asked_for):
+    """One genre tag for a music request no station or tag matched ("something relaxing" ->
+    "chillout"), or None."""
+    said = _first(asked_for, GENRE)
+
+    if not said:
+        return None
+
+    tag = " ".join(re.sub(r"[^a-z0-9 &-]", " ", said.casefold()).split()[:2])
+    return tag or None

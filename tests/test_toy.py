@@ -1225,3 +1225,73 @@ def test_the_toy_tells_people_to_say_hey_jarvis(client, fresh_faces, monkeypatch
     import re
     sources = "".join(open(path, encoding="ascii").read() for path in glob.glob("toy/*.py") + ["app.py"])
     assert not re.search(r"[Ss]ay,? Jarvis|Tell me: Jarvis", sources), "every instruction names what the ear hears"
+
+
+# ---- music: internet radio (1 November 2026) -------------------------------------------------------
+
+from toy import radio  # noqa: E402
+
+
+@pytest.mark.parametrize("said, wanted", [
+    ("Hey Jarvis, play some jazz", ("play", "jazz")),
+    ("play Capital FM", ("play", "capital fm")),
+    ("can you play a Quran station please", ("play", "quran station")),
+    ("put on something relaxing", ("play", "something relaxing")),
+    ("pause", ("pause", None)), ("pause the music", ("pause", None)),
+    ("resume", ("resume", None)), ("carry on", ("resume", None)), ("play", ("resume", None)),
+    ("stop", ("stop", None)), ("turn off the radio", ("stop", None)), ("stop the music", ("stop", None)),
+    ("what time is it", None), ("tell me a story about a play", None),
+])
+def test_music_requests(said, wanted):
+    assert radio.asked(said) == wanted
+
+
+def station(name, url, **extra):
+    return {"name": name, "url": url, "url_resolved": url, "codec": "MP3", "bitrate": 128, "hls": 0,
+            "lastcheckok": 1, **extra}
+
+
+def test_a_station_by_name_then_by_genre_then_the_models_genre(monkeypatch):
+    asked = []
+
+    def get(url, params=None, timeout=None, headers=None):
+        asked.append(dict(params))
+        found = {("name", "jazz"): [], ("tag", "jazz"): [station("Smooth Jazz", "https://jazz.example/live")],
+                 ("name", "something relaxing"): [], ("tag", "something relaxing"): [],
+                 ("tag", "chillout"): [station("Chill", "https://chill.example/mp3")]}
+        key = ("name", params["name"]) if "name" in params else ("tag", params["tag"])
+        assert headers["User-Agent"].startswith("jarvis-toy-cloud")
+        return Answer(found.get(key, []))
+
+    monkeypatch.setattr(radio.requests, "get", get)
+    assert radio.find("jazz") == {"name": "Smooth Jazz", "url": "https://jazz.example/live"}
+    assert asked[0]["codec"] == "MP3" and asked[0]["is_https"] == "true" and asked[0]["hidebroken"] == "true"
+    assert radio.find("something relaxing", genre_for=lambda what: "chillout")["name"] == "Chill"
+    assert radio.find("nothing at all", genre_for=lambda what: None) is None
+
+
+def test_only_streams_the_toy_can_play(monkeypatch):
+    stations = [station("HLS", "https://a.example/x.m3u8", hls=1), station("Plain", "http://b.example/live"),
+                station("Huge", "https://c.example/live", bitrate=320), station("AAC", "https://d.example", codec="AAC"),
+                station("Good", "https://e.example/live")]
+    monkeypatch.setattr(radio.requests, "get", lambda *a, **k: Answer(stations))
+    assert radio.find("anything")["name"] == "Good"
+
+
+def test_play_on_the_toy_sends_the_station(client, monkeypatch):
+    toy_app._toys.clear()
+    monkeypatch.setattr(radio, "find", lambda what, genre_for=None: {"name": "Smooth Jazz", "url": "https://jazz.example/live"})
+    answer = talk(client, "Hey Jarvis, play some jazz", how="wake")
+    assert answer.headers["X-Jarvis-Play"] == "https://jazz.example/live" and answer.data == b"Playing Smooth Jazz, sir."
+    answer = talk(client, "Hey Jarvis, stop", how="wake")
+    assert answer.headers["X-Jarvis-Play"] == "stop" and answer.data == b"Stopped, sir."
+    assert "X-Jarvis-Play" not in talk(client, "Hey Jarvis, what time is it", how="wake").headers
+    monkeypatch.setattr(radio, "find", lambda what, genre_for=None: None)
+    answer = talk(client, "Hey Jarvis, play something odd", how="wake")
+    assert "X-Jarvis-Play" not in answer.headers and answer.data == b"I couldn't find a station for something odd, sir."
+    toy_app._toys.clear()
+
+
+def test_the_models_genre_is_one_tag(monkeypatch):
+    monkeypatch.setattr(brain, "_first", lambda question, system: "Chillout!")
+    assert brain.genre("something relaxing") == "chillout"
