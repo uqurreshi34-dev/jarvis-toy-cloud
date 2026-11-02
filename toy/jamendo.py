@@ -30,6 +30,9 @@ TIMEOUT = (5, 10)
 LIMIT = 50
 LIST_HOURS = 12
 MAX_LISTS = 50
+# Songs only: Jamendo also has 5, 11, 30 and 60 second cuts of tracks, loops for videos, which played
+# as a song ending at once, or "what's playing" naming a song not the one heard (2 November 2026).
+SONG_SECONDS = (90, 900)
 
 # Jamendo's own genres (its site's list), as its tags are written: "hip hop" -> "hiphop".
 GENRES = frozenset({"pop", "rock", "electronic", "hiphop", "jazz", "indie", "filmscore", "classical",
@@ -62,7 +65,7 @@ def tracks(what=""):
         return []
 
     params = {"client_id": client_id(), "format": "json", "limit": LIMIT, "audioformat": "mp31",
-              "type": "single albumtrack"}
+              "type": "single albumtrack", "durationbetween": f"{SONG_SECONDS[0]}_{SONG_SECONDS[1]}"}
     what = " ".join(str(what or "").split())[:80]
     tag = genre_tag(what)
 
@@ -91,7 +94,12 @@ def tracks(what=""):
     for track in found.get("results") or []:
         url = str(track.get("audio") or "").strip()
 
-        if url.startswith("https://") and len(url) <= 400:
+        try:
+            seconds = int(track.get("duration") or 0)
+        except (TypeError, ValueError):
+            seconds = 0
+
+        if url.startswith("https://") and len(url) <= 400 and (not seconds or SONG_SECONDS[0] <= seconds <= SONG_SECONDS[1]):
             playable.append({"name": str(track.get("name") or "a song").strip(),
                              "artist": str(track.get("artist_name") or "an artist").strip(), "url": url})
 

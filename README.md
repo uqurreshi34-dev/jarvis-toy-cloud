@@ -120,8 +120,9 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   the name, and what it writes for "JAM-endo" ("jam endo", "jamaindo", "gemendo") is taken as it. The toy is given
   `/toy/music/<list>`, which sends it on to the next song each time it joins (as a station that drops
   is joined again), so songs follow one another; a list is kept in memory for 12 hours, and its name
-  cannot be guessed. A request no station matches at all plays from Jamendo instead. Resuming moves
-  on to the next song. Needs `JAMENDO_CLIENT_ID` (free, devportal.jamendo.com); without it, it says so.
+  cannot be guessed. A request no station matches at all plays from Jamendo instead. Songs only, 90
+  seconds to 15 minutes (`SONG_SECONDS`), not the short cuts made for videos. A paused song resumes
+  where it stopped: the toy asks the song's own address for the rest, not the list. Needs `JAMENDO_CLIENT_ID` (free, devportal.jamendo.com); without it, it says so.
   Jamendo's API is free for non-commercial use only (commercial: licensing@jamendo.com), crediting
   each song's artist and Jamendo.
 - "Hey Jarvis, what's playing" / "who is this" / "what song is this": the Jamendo song and its artist,

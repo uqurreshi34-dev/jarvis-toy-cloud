@@ -1542,3 +1542,19 @@ def test_jamendo_as_whisper_writes_it(said, wanted):
 def test_whisper_is_told_of_jamendo():
     from toy import hearing
     assert "Jamendo" in hearing.PROMPT
+
+
+def test_jamendo_plays_songs_not_loops(fresh_jamendo, monkeypatch):
+    """2 November 2026: Jamendo has 5 to 60 second cuts of songs for videos; one played, and 'what's
+    playing' named a song not the one heard."""
+    asked = []
+
+    def get(url, params=None, timeout=None):
+        asked.append(dict(params))
+        return Answer({"headers": {"status": "success"}, "results": [
+            {**jamendo_track("Lofi Background Chillhop (5sec)", "Joel Loopez", "https://x.example/5"), "duration": 5},
+            {**jamendo_track("Lofi Background Chillhop", "Stormusic", "https://x.example/full"), "duration": 192}]})
+
+    monkeypatch.setattr(jamendo.requests, "get", get)
+    assert [track["name"] for track in jamendo.tracks("chillout")] == ["Lofi Background Chillhop"]
+    assert asked[0]["durationbetween"] == "90_900", "asked of Jamendo too, so a list is full of songs"
