@@ -23,6 +23,7 @@ ones change.
 
 import os
 import re
+from difflib import SequenceMatcher
 
 import requests
 
@@ -84,14 +85,46 @@ def now_asked(text):
     return bool(_NOW.match(_words(text)))
 
 
-def from_jamendo(what):
-    """For "hip hop from jamendo", "jamendo jazz", "jamendo": what is wanted from Jamendo ("hip hop", or
-    "" for anything); None when Jamendo was not asked for."""
-    words = _words(what).split()
+# How alike a word (or two or three run together) must be to "jamendo" to be it: Whisper, not knowing
+# the name, wrote "JAM-endo" as "jam endo" and its like, and the radio was searched instead (2 November
+# 2026). It starts as "JAM" does ("j", or "g" as in "gemendo"): "jam", "commando" or "amend" are not it.
+JAMENDO_LIKE = 0.8
 
-    if "jamendo" not in words:
+
+def _jamendo_at(words):
+    """(where, how many words) of "jamendo" as heard in [words] -- the closest run of one to three words,
+    the longer on a tie -- or None."""
+    best = None
+
+    for at in range(len(words)):
+        for count in (1, 2, 3):
+            if at + count > len(words):
+                break
+
+            heard = "".join(words[at:at + count])
+            heard = "j" + heard[1:] if heard[:1] == "g" else heard
+            like = SequenceMatcher(None, heard, "jamendo").ratio() if heard[:1] == "j" else 0.0
+
+            if like >= JAMENDO_LIKE and (best is None or like >= best[0]):
+                best = (like, at, count)
+
+        if best:
+            return best[1], best[2]
+
+    return None
+
+
+def from_jamendo(what):
+    """For "hip hop from jamendo", "jamendo jazz", "jamendo" (or as Whisper writes it, "jam endo"): what is
+    wanted from Jamendo ("hip hop", or "" for anything); None when Jamendo was not asked for."""
+    words = _words(what).split()
+    found = _jamendo_at(words)
+
+    if not found:
         return None
 
+    at, count = found
+    words = words[:at] + words[at + count:]
     return " ".join(word for word in words if word not in _JAMENDO_WORDS)
 
 

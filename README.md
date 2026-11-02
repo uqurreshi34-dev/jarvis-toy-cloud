@@ -116,7 +116,8 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   and the toy says it cannot choose their songs on the radio; a station named for them ("Bob Marley
   Radio") plays as itself.
 - Jamendo (`toy/jamendo.py`): "Hey Jarvis, play some hip hop from Jamendo" / "play Jamendo jazz" /
-  "play Jamendo": independent artists' songs, free to stream, 96 kbps MP3 over HTTPS. The toy is given
+  "play Jamendo": independent artists' songs, free to stream, 96 kbps MP3 over HTTPS. Whisper is told
+  the name, and what it writes for "JAM-endo" ("jam endo", "jamaindo", "gemendo") is taken as it. The toy is given
   `/toy/music/<list>`, which sends it on to the next song each time it joins (as a station that drops
   is joined again), so songs follow one another; a list is kept in memory for 12 hours, and its name
   cannot be guessed. A request no station matches at all plays from Jamendo instead. Resuming moves

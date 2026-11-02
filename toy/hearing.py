@@ -7,8 +7,10 @@ import requests
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_MODEL = "whisper-large-v3-turbo"
 
-# Naming the expected words biases Whisper towards them, so "Jarvis" is not heard as "java's".
-PROMPT = "Jarvis. Things said to Jarvis, a toy: mute, unmute, what time is it, how are you, I love you."
+# Naming the expected words biases Whisper towards them, so "Jarvis" is not heard as "java's", nor
+# "Jamendo" (said "JAM-endo") as "jam endo" (2 November 2026).
+PROMPT = ("Jarvis. Things said to Jarvis, a toy: mute, unmute, what time is it, how are you, I love you, "
+          "play some hip hop from Jamendo, what's playing, pause, resume.")
 
 TIMEOUT = (5, 20)
 

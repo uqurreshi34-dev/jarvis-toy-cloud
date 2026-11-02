@@ -1527,3 +1527,18 @@ def test_whats_playing_names_the_station(client, monkeypatch):
     monkeypatch.setattr(radio, "find", lambda *a, **k: {"name": "Bob Marley Radio", "url": "https://marley.example/live"})
     talk(client, "Hey Jarvis, play bob marley", how="wake")
     assert talk(client, "Hey Jarvis, who is this", how="wake").data == b"This is Bob Marley Radio, a radio station, sir."
+
+
+@pytest.mark.parametrize("said, wanted", [
+    ("hip hop from jam endo", "hip hop"), ("hip hop from jamaindo", "hip hop"), ("jumendo jazz", "jazz"),
+    ("jazz from gemendo", "jazz"),
+    ("some hip hop from jam and o", "hip hop"), ("rock from jamendo's", "rock"), ("jam endo", ""),
+    ("some jam", None), ("commando", None), ("amend", None), ("hip hop", None), ("jam session", None)])
+def test_jamendo_as_whisper_writes_it(said, wanted):
+    """2 November 2026: said 'JAM-endo', heard as something else, and the radio was searched instead."""
+    assert radio.from_jamendo(said) == wanted
+
+
+def test_whisper_is_told_of_jamendo():
+    from toy import hearing
+    assert "Jamendo" in hearing.PROMPT
