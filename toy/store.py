@@ -1,4 +1,5 @@
-"""What the toy remembers across restarts: the faces it was asked to learn, and where it lives.
+"""What the toy remembers across restarts: the faces it was asked to learn, where it lives, and whether
+it was muted.
 
 In the Postgres database at DATABASE_URL (Neon's free plan), so a restart or a redeploy on Render
 forgets nothing. Without DATABASE_URL -- the tests, or a database that cannot be reached -- it is kept
@@ -9,6 +10,8 @@ Kept per toy (its X-Jarvis-Camera name):
           faces someone asked to be learned ("Jarvis, learn my face, I'm Sarah"); a stranger's face
           is compared and let go, never kept. "Jarvis, forget my face" deletes them.
   places: where it lives ("Jarvis, I live in Leeds"): the town, its latitude, longitude, time zone.
+  muted:  whether it was told "Hey Jarvis, mute", until "Hey Jarvis, unmute" (2 November 2026: kept in
+          the server's memory, a mute lasted only until Render restarted it).
 """
 
 import os
@@ -20,7 +23,7 @@ import numpy as np
 KEEP_PER_PERSON = 30
 
 _lock = threading.Lock()
-_memory = {"faces": [], "places": {}}
+_memory = {"faces": [], "places": {}, "muted": {}}
 _said_memory = False
 _ready = False
 
@@ -48,6 +51,7 @@ def _setup(connection):
     connection.execute(
         "CREATE TABLE IF NOT EXISTS toy_places (toy TEXT PRIMARY KEY, city TEXT NOT NULL, lat DOUBLE PRECISION,"
         " lon DOUBLE PRECISION, timezone TEXT)")
+    connection.execute("CREATE TABLE IF NOT EXISTS toy_muted (toy TEXT PRIMARY KEY, muted BOOLEAN NOT NULL)")
     _ready = True
 
 
@@ -185,6 +189,33 @@ def get_place(toy):
     return {"city": row[0], "lat": row[1], "lon": row[2], "timezone": row[3]}
 
 
+# ---- muted --------------------------------------------------------------------------------------
+
+def set_muted(toy, muted):
+    """Keeps whether [toy] is muted. True when kept."""
+    if _use_memory():
+        with _lock:
+            _memory["muted"][toy] = bool(muted)
+
+        return True
+
+    return bool(_run(lambda connection: connection.execute(
+        "INSERT INTO toy_muted (toy, muted) VALUES (%s, %s) ON CONFLICT (toy) DO UPDATE SET muted = EXCLUDED.muted",
+        (toy, bool(muted))) or True))
+
+
+def get_muted(toy):
+    """Whether [toy] was left muted: False when never muted, or when the database cannot be reached (a toy
+    that cannot be unmuted would be worse than one that forgot it was muted)."""
+    if _use_memory():
+        with _lock:
+            return bool(_memory["muted"].get(toy, False))
+
+    row = _run(lambda connection: connection.execute(
+        "SELECT muted FROM toy_muted WHERE toy = %s", (toy,)).fetchone())
+    return bool(row and row[0])
+
+
 def kind():
     """Where memory is kept, for /health: "database", "database unreachable" or "memory only"."""
     if not _url():
@@ -198,3 +229,4 @@ def forget_all():
     with _lock:
         _memory["faces"].clear()
         _memory["places"].clear()
+        _memory["muted"].clear()

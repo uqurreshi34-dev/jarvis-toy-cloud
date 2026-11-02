@@ -22,6 +22,7 @@ SPEECH = b"RIFF" + b"\0" * 40 + b"\1\0" * 16000   # a header and half a second o
 def client(monkeypatch):
     monkeypatch.setenv("TOY_TOKEN", TOKEN)
     toy_app._toys.clear()
+    toy_app.store.forget_all()   # muted is kept there now, and must not carry from test to test
     heard = {"text": ""}
     monkeypatch.setattr(toy_app.hearing, "transcribe", lambda wav: heard["text"])
     monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: f"answer to {text}")
@@ -1317,3 +1318,80 @@ def test_a_station_by_name_when_no_genre_matches(monkeypatch):
 ])
 def test_station_names_are_said_short(name, said):
     assert radio.spoken_name(name) == said
+
+
+def test_a_mute_survives_the_cloud_restarting(client):
+    """2 November 2026: muted, the toy stayed muted overnight only because Render had not restarted --
+    the mute was in the server's memory. Kept in the database, a restart (its memory cleared) keeps it."""
+    assert talk(client, "Jarvis, mute").headers["X-Jarvis-Muted"] == "1"
+    toy_app._toys.clear()
+    silent = talk(client, "Jarvis, what time is it")
+    assert silent.status_code == 204 and silent.headers["X-Jarvis-Muted"] == "1"
+    assert talk(client, "Jarvis, unmute").headers["X-Jarvis-Muted"] == "0"
+    toy_app._toys.clear()
+    assert talk(client, "Jarvis, hello").headers["X-Jarvis-Muted"] == "0"
+    assert toy_app.store.get_muted("toy cam") is False
+
+
+def test_a_mute_is_per_toy(client):
+    talk(client, "Jarvis, mute", toy="toy cam")
+    toy_app._toys.clear()
+    assert talk(client, "Jarvis, hello", toy="kitchen toy").status_code == 200
+    assert talk(client, "Jarvis, hello", toy="toy cam").status_code == 204
+
+
+def test_health_tells_a_toy_whether_it_is_muted_only_with_its_token(client):
+    talk(client, "Jarvis, mute")
+    toy_app._toys.clear()
+    asked = client.get("/health", headers={"X-Jarvis-Token": TOKEN, "X-Jarvis-Camera": "toy cam"})
+    assert asked.get_json() == {"ok": True, "muted": True}
+    assert client.get("/health", headers={"X-Jarvis-Camera": "toy cam"}).get_json() == {"ok": True}
+    assert client.get("/health", headers={"X-Jarvis-Token": "wrong", "X-Jarvis-Camera": "toy cam"}).get_json() == {"ok": True}
+
+
+def test_a_database_that_cannot_be_reached_never_leaves_a_toy_muted(monkeypatch):
+    monkeypatch.setattr(toy_app.store, "_use_memory", lambda: False)
+    monkeypatch.setattr(toy_app.store, "_run", lambda work: None)
+    assert toy_app.store.get_muted("toy cam") is False
+    assert toy_app.store.set_muted("toy cam", True) is False
+
+
+def test_a_station_is_found_by_name_only_when_its_name_as_said_has_the_words(monkeypatch):
+    """2 November 2026: 'play kendrick lamar' found a station whose name lists artists to be found,
+    '70s & 80s - ... Kendrick Lamar, Drake ...', and said '70s & 80s'."""
+    def get(url, params=None, timeout=None, headers=None):
+        if params.get("name") == "kendrick lamar":
+            return Answer([station("70s & 80s - Classic Hits, Kendrick Lamar, Drake", "https://stuffed.example/x")])
+        if params.get("name") == "bob marley":
+            return Answer([station("Bob Marley Radio - Reggae", "https://marley.example/live")])
+        if params.get("tag") == "hip hop":
+            return Answer([station("Hip Hop Nation", "https://hiphop.example/live")])
+        return Answer([])
+
+    monkeypatch.setattr(radio.requests, "get", get)
+    assert radio.find("kendrick lamar") is None
+    assert radio.find("kendrick lamar", genre_for=lambda what: ("hip hop", True)) == {
+        "name": "Hip Hop Nation", "url": "https://hiphop.example/live", "genre": "hip hop", "artist": True}
+    assert radio.find("bob marley") == {"name": "Bob Marley Radio", "url": "https://marley.example/live"}
+
+
+def test_an_artist_is_told_the_radio_cannot_choose_their_songs(client, monkeypatch):
+    monkeypatch.setattr(radio, "find", lambda what, genre_for=None: {
+        "name": "Hip Hop Nation", "url": "https://hiphop.example/live", "genre": "hip hop", "artist": True})
+    answer = talk(client, "Hey Jarvis, play kendrick lamar", how="wake")
+    assert answer.headers["X-Jarvis-Play"] == "https://hiphop.example/live"
+    assert answer.data == b"I can't choose songs by Kendrick Lamar on the radio, sir, but here's some hip hop: Hip Hop Nation."
+    monkeypatch.setattr(radio, "find", lambda what, genre_for=None: {
+        "name": "Chill", "url": "https://chill.example/mp3", "genre": "chillout", "artist": False})
+    assert talk(client, "Hey Jarvis, play something relaxing", how="wake").data == b"Here's some chillout, sir: Chill."
+
+
+def test_the_model_says_whether_an_artist_was_named(monkeypatch):
+    monkeypatch.setattr(brain, "_first", lambda question, system: "Hip Hop | yes")
+    assert brain.music_genre("kendrick lamar") == ("hip hop", True)
+    monkeypatch.setattr(brain, "_first", lambda question, system: "chillout | no")
+    assert brain.music_genre("something relaxing") == ("chillout", False)
+    monkeypatch.setattr(brain, "_first", lambda question, system: "Chillout!")
+    assert brain.music_genre("something relaxing") == ("chillout", False) and brain.genre("x") == "chillout"
+    monkeypatch.setattr(brain, "_first", lambda question, system: None)
+    assert brain.music_genre("anything") is None

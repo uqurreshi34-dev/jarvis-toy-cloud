@@ -11,7 +11,10 @@ name ("Capital FM"), and only if both find nothing does the model turn it into a
 relaxing" -> "chillout"): no list of genres or stations is kept here. Names first had "play some
 jazz" pick "Lounge Ibiza Chillout Lounge ... Jazz ...", a name stuffed with genres to be found, and
 read it all out for nine seconds (1 November 2026); a name is said only up to its first dash, bar,
-comma or bracket, at most SPOKEN_WORDS words. Only MP3 streams over HTTPS that Radio Browser last found working,
+comma or bracket, at most SPOKEN_WORDS words, and a station is found by name only when what was asked
+for is in that part: "play kendrick lamar" found "70s & 80s - ... Kendrick Lamar, Drake ...", a name
+listing artists to be found, and played it (2 November 2026). An artist the model has to place gets
+their genre, and the toy says it cannot choose their songs: radio plays what the station plays. Only MP3 streams over HTTPS that Radio Browser last found working,
 not HLS, at most MAX_BITRATE kbps, most listened to first.
 
 TOY_RADIO_SERVERS: Radio Browser's servers to ask, in turn (comma-separated), when the default
@@ -123,18 +126,28 @@ def spoken_name(name):
     return " ".join(words) or "a station"
 
 
-def _first_playable(stations):
+def _first_playable(stations, named=None):
+    """The first station the toy can play; with [named], only one whose name as said has those words."""
+    wanted = set(_words(named).split()) if named else set()
+
     for station in stations:
-        if isinstance(station, dict) and _playable(station):
-            return {"name": spoken_name(station.get("name")),
-                    "url": str(station.get("url_resolved") or station.get("url")).strip()}
+        if not isinstance(station, dict) or not _playable(station):
+            continue
+
+        said = spoken_name(station.get("name"))
+
+        if wanted and not wanted <= set(_words(said).split()):
+            continue
+
+        return {"name": said, "url": str(station.get("url_resolved") or station.get("url")).strip()}
 
     return None
 
 
 def find(what, genre_for=None):
     """{"name", "url"} of a station for [what] -- a station's name, else a genre -- or None.
-    [genre_for] turns a request into one genre word when neither finds anything (the model's)."""
+    [genre_for] turns a request into a genre when neither finds anything (the model's): a tag, or
+    (tag, whether an artist was named); the station found that way has "genre" (and "artist") too."""
     what = " ".join(str(what or "").split())[:80]
 
     if not what:
@@ -149,16 +162,22 @@ def find(what, genre_for=None):
         if station:
             return station
 
-    station = _first_playable(_search(name=what))
+    station = _first_playable(_search(name=what), named=what)
 
     if station:
         return station
 
     if genre_for:
-        guess = " ".join(str(genre_for(what) or "").casefold().split())[:40]
+        found = genre_for(what)
+        guess, artist = found if isinstance(found, tuple) else (found, False)
+        guess = " ".join(str(guess or "").casefold().split())[:40]
 
         if guess and guess != genre:
-            print(f"[toy-cloud] radio: {what!r} taken as the genre {guess!r}", flush=True)
-            return _first_playable(_search(tag=guess, tagExact="true"))
+            print(f"[toy-cloud] radio: {what!r} taken as the genre {guess!r}{' (an artist)' if artist else ''}",
+                  flush=True)
+            station = _first_playable(_search(tag=guess, tagExact="true"))
+
+            if station:
+                return {**station, "genre": guess, "artist": bool(artist)}
 
     return None

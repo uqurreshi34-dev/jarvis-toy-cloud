@@ -243,17 +243,26 @@ def answer(question, today="", city=""):
 GENRE = (
     "The user asked a toy to play some music on internet radio. Reply with the one music genre, as a "
     "radio station tag of one or two lowercase words (for example: jazz, chillout, classical, pop, "
-    "quran), that best fits what they asked for. Reply with only the tag."
+    "hip hop, reggae, quran), that best fits what they asked for -- for a musician, band or singer, "
+    "their main genre. Then a vertical bar, then yes if they named a particular musician, band or "
+    "singer, else no. Reply with only that, for example: hip hop | yes"
 )
 
 
-def genre(asked_for):
-    """One genre tag for a music request no station or tag matched ("something relaxing" ->
-    "chillout"), or None."""
+def music_genre(asked_for):
+    """(genre tag, whether an artist was named) for a music request no station or tag matched
+    ("something relaxing" -> ("chillout", False), "kendrick lamar" -> ("hip hop", True)), or None."""
     said = _first(asked_for, GENRE)
 
     if not said:
         return None
 
-    tag = " ".join(re.sub(r"[^a-z0-9 &-]", " ", said.casefold()).split()[:2])
-    return tag or None
+    tag, _, artist = said.partition("|")
+    tag = " ".join(re.sub(r"[^a-z0-9 &-]", " ", tag.casefold()).split()[:2])
+    return (tag, artist.strip().casefold().startswith("yes")) if tag else None
+
+
+def genre(asked_for):
+    """One genre tag for a music request no station or tag matched, or None."""
+    found = music_genre(asked_for)
+    return found[0] if found else None

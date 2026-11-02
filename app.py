@@ -59,8 +59,9 @@ UNMUTE_WORDS = frozenset({"unmute", "unmute yourself", "start listening", "liste
 app = Flask(__name__)
 _STARTED = time.monotonic()
 
-# Per toy (X-Jarvis-Camera): muted, and until when a follow-up needs no name. Kept in memory: a
-# restart unmutes the toy and ends a follow-up window, which is the safe way round.
+# Per toy (X-Jarvis-Camera): muted, and until when a follow-up needs no name. Muted is kept in the
+# database too (store.set_muted), so a restart leaves a muted toy muted, read back when a toy is first
+# heard from; the rest is in memory only, and a restart ends a follow-up window, the safe way round.
 _toys = {}
 _toys_lock = threading.Lock()
 
@@ -68,8 +69,20 @@ _toys_lock = threading.Lock()
 def _toy(name):
     with _toys_lock:
         name = name or "toy"
-        return _toys.setdefault(name, {"name": name, "muted": False, "follow_until": 0.0, "fallback_said": None,
-                                       "faces_wanted": 0, "play": ""})
+        if name not in _toys:
+            _toys[name] = {"name": name, "muted": store.get_muted(name), "follow_until": 0.0,
+                           "fallback_said": None, "faces_wanted": 0, "play": ""}
+
+        return _toys[name]
+
+
+def _set_muted(toy, muted):
+    toy["muted"] = muted
+    toy["follow_until"] = 0.0
+
+    if not store.set_muted(toy["name"], muted):
+        print(f"[toy-cloud] memory: could not keep {'muted' if muted else 'unmuted'}; until a restart only",
+              flush=True)
 
 
 def _authorised():
@@ -115,13 +128,22 @@ def play_words(toy, what, asked_for=None):
         toy["play"] = what
         return PLAY_WORDS[what]
 
-    station = radio.find(asked_for, genre_for=brain.genre)
+    station = radio.find(asked_for, genre_for=brain.music_genre)
 
     if not station:
         return f"I couldn't find a station for {asked_for}, sir."
 
     toy["play"] = station["url"]
     print(f"[toy-cloud] radio: {asked_for!r} -> {station['name']} ({station['url']})", flush=True)
+
+    # Radio plays what the station plays: an artist gets their kind of music, and is told so.
+    if station.get("artist"):
+        return (f"I can't choose songs by {asked_for.title()} on the radio, sir, but here's some "
+                f"{station['genre']}: {station['name']}.")
+
+    if station.get("genre"):
+        return f"Here's some {station['genre']}, sir: {station['name']}."
+
     return f"Playing {station['name']}, sir."
 
 
@@ -238,8 +260,7 @@ def respond(wav, heard_by, toy, ip=None):
     asked = mute_asked(text)
 
     if asked == "unmute":
-        toy["muted"] = False
-        toy["follow_until"] = 0.0
+        _set_muted(toy, False)
         print("[toy] unmuted", flush=True)
         return "I'm listening again, sir.", "", ""
 
@@ -248,8 +269,7 @@ def respond(wav, heard_by, toy, ip=None):
         return None, "", ""
 
     if asked == "mute":
-        toy["muted"] = True
-        toy["follow_until"] = 0.0
+        _set_muted(toy, True)
         print("[toy] muted", flush=True)
         return f"Muted, sir. Say {wake.WAKE_PHRASE}, unmute, when you want me.", "", ""
 
@@ -307,7 +327,11 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0, play=""):
 @app.get("/health")
 def health():
     """Open, and nothing secret in it. With ?detail=1, where memory is kept and whether the face
-    models are loaded: open it in a browser to check the toy's cloud without a laptop."""
+    models are loaded: open it in a browser to check the toy's cloud without a laptop. Asked by a toy
+    with its token, whether it is muted too: it pulses red from start-up, not only once it is spoken to."""
+    if _authorised() and (request.headers.get("X-Jarvis-Camera") or "").strip():
+        return jsonify({"ok": True, "muted": _toy(request.headers["X-Jarvis-Camera"].strip())["muted"]})
+
     if request.args.get("detail"):
         return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status(),
                         "process": os.getpid(), "parent": os.getppid(), "up_seconds": round(time.monotonic() - _STARTED)})
@@ -339,8 +363,11 @@ def toy_talk():
         print(f"[toy-cloud] talk failed: {error}", flush=True)
         said, mood, switch = "Something went wrong there, sir.", "", ""
 
+    # X-Jarvis-Muted on every answer, silence included: the toy's ring pulses red while it is muted.
+    muted = {"X-Jarvis-Muted": "1" if toy["muted"] else "0"}
+
     if said is None:
-        return "", 204
+        return "", 204, muted
 
     # Asked for PC mode while already falling back from it: the switch itself says what happens.
     if fell_back and not switch:
@@ -349,7 +376,12 @@ def toy_talk():
 
     wanted, toy["faces_wanted"] = toy["faces_wanted"], 0
     play, toy["play"] = toy.get("play", ""), ""
-    return _pcm_response(said, mood, switch, wanted, play)
+    answer = _pcm_response(said, mood, switch, wanted, play)
+
+    if len(answer) == 3:   # spoken (else the voice failed: its error as it is)
+        answer[2].update(muted)
+
+    return answer
 
 
 # A known face this recent means a person coming into view is still them.

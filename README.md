@@ -99,6 +99,9 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
 - "Jarvis, I live in Leeds": kept, and used for the time and the weather before any guess.
 - "What can you see", "is anyone there": from the toy's last report, and who, if it knows them.
 - Kept in Postgres at `DATABASE_URL` (Neon's free plan). Without it, in memory until restart.
+- "Hey Jarvis, mute" is kept there too (`toy_muted`), so a muted toy stays muted when Render restarts,
+  until "Hey Jarvis, unmute". Every talk answer, silence included, says `X-Jarvis-Muted: 1` or `0`, and
+  `/health` asked with the toy's token and name says `"muted"`: the toy's ring pulses red while muted.
 
 ## Music
 
@@ -107,6 +110,10 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   then a station's name, and only then the model's genre for the words; a name is said short. Only MP3 over HTTPS, working, not HLS, at most
   192 kbps, most listened to first. The toy gets the address in `X-Jarvis-Play` and plays the stream
   itself; "pause", "resume" and "stop" go the same way. `TOY_RADIO_SERVERS` overrides the servers.
+- A station is found by name only when the words are in its name as said, not in a name listing artists
+  to be found. "Play Kendrick Lamar": an artist the model has to place gets a station of their genre,
+  and the toy says it cannot choose their songs on the radio; a station named for them ("Bob Marley
+  Radio") plays as itself.
 
 ## Trying it from the PC
 
