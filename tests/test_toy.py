@@ -1598,3 +1598,25 @@ def test_next_on_a_live_station_says_it_cannot(client, monkeypatch):
     answer = talk(client, "Hey Jarvis, next song", how="wake")
     assert "X-Jarvis-Play" not in answer.headers
     assert answer.data.startswith(b"Bob Marley Radio is a live radio station, sir, so I can't skip its songs.")
+
+
+# ---- the light show -------------------------------------------------------------------------------
+
+from toy import lights  # noqa: E402
+
+
+@pytest.mark.parametrize("said", ["do a light show", "Jarvis, do a light show", "light show please", "show me your lights",
+                                  "can you do a light show", "rainbow", "show me your colours", "give us a lightshow"])
+def test_a_light_show_is_asked(said):
+    assert lights.asked(said)
+
+
+@pytest.mark.parametrize("said", ["turn the lights off", "what colour is the sky", "play some jazz", "show me the weather"])
+def test_a_light_show_is_only_asked_for_so(said):
+    assert not lights.asked(said)
+
+
+def test_the_toy_is_told_to_do_the_light_show(client):
+    answer = talk(client, "Hey Jarvis, do a light show", how="wake")
+    assert answer.headers["X-Jarvis-Show"] == "lights" and answer.data == lights.SAID.encode()
+    assert "X-Jarvis-Show" not in talk(client, "Hey Jarvis, what time is it", how="wake").headers, "once, not again"

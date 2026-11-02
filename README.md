@@ -132,6 +132,11 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   song); a new list of the same when the old one has gone. A live station's songs cannot be skipped,
   and it says so.
 
+## Light show
+
+- "Hey Jarvis, do a light show" / "show me your lights" / "rainbow": said, and `X-Jarvis-Show: lights`
+  tells the toy to run its rings through every colour of the wheel, three times round (`toy/lights.py`).
+
 ## Trying it from the PC
 
 ```

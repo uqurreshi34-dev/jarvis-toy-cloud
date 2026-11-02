@@ -27,7 +27,7 @@ import time
 
 from flask import Flask, jsonify, redirect, request
 
-from toy import brain, faces, hearing, jamendo, modes, radio, seen, social, store, voice, wake, world
+from toy import brain, faces, hearing, jamendo, lights, modes, radio, seen, social, store, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -72,7 +72,7 @@ def _toy(name):
         if name not in _toys:
             _toys[name] = {"name": name, "muted": store.get_muted(name), "follow_until": 0.0,
                            "fallback_said": None, "faces_wanted": 0, "play": "", "now": None,
-                           "source": None}
+                           "source": None, "show": ""}
 
         return _toys[name]
 
@@ -226,6 +226,10 @@ def answer_words(text, ip=None, toy=None):
     if which:
         return social.reply(which), "affection" if which in social.FOND_KINDS else ""
 
+    if lights.asked(text):
+        toy["show"] = "lights"
+        return lights.SAID, ""
+
     music = radio.asked(text)
 
     if music:
@@ -371,7 +375,7 @@ def _fallback_note(toy, now=None):
     return FALLBACK_WORDS
 
 
-def _pcm_response(said, mood="", switch="", faces_wanted=0, play=""):
+def _pcm_response(said, mood="", switch="", faces_wanted=0, play="", show=""):
     data = voice.pcm16(said)
 
     if not data:
@@ -391,6 +395,9 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0, play=""):
 
     if play:
         headers["X-Jarvis-Play"] = play
+
+    if show:
+        headers["X-Jarvis-Show"] = show
 
     return data, 200, headers
 
@@ -464,7 +471,8 @@ def toy_talk():
 
     wanted, toy["faces_wanted"] = toy["faces_wanted"], 0
     play, toy["play"] = toy.get("play", ""), ""
-    answer = _pcm_response(said, mood, switch, wanted, play)
+    show, toy["show"] = toy.get("show", ""), ""
+    answer = _pcm_response(said, mood, switch, wanted, play, show)
 
     if len(answer) == 3:   # spoken (else the voice failed: its error as it is)
         answer[2].update(muted)
