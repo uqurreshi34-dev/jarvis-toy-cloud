@@ -43,6 +43,11 @@ _RESUME = re.compile(r"^(?:please\s+)?(?:resume|unpause|carry\s+on|continue|play
 _STOP = re.compile(r"^(?:please\s+)?(?:stop|stop\s+playing|stop\s+the\s+(?:music|radio)|turn\s+(?:off\s+the\s+(?:music|radio)"
                    r"|the\s+(?:music|radio)\s+off))(?:\s+please)?$")
 
+_NOW = re.compile(r"^(?:what(?:s| is)\s+(?:playing|this(?:\s+song)?|(?:the\s+)?song)|what\s+song\s+is\s+(?:this|it|playing)"
+                  r"|who(?:s| is)\s+(?:this|singing|playing)|who\s+sings\s+this|what\s+(?:am\s+i|are\s+we)\s+"
+                  r"listening\s+to)(?:\s+(?:now|please))?$")
+_JAMENDO_WORDS = frozenset({"jamendo", "from", "on", "off", "some", "music", "songs", "a", "an", "the", "please"})
+
 # Words that say "music" without being a station or a genre.
 _FILLER = re.compile(r"\b(?:some|music|songs?|station|stations|radio|channel|please|a|an|the)\b")
 
@@ -72,6 +77,22 @@ def asked(text):
         return "play", found.group(1).strip()
 
     return None
+
+
+def now_asked(text):
+    """True for "what's playing", "what song is this", "who is this", "who's singing"."""
+    return bool(_NOW.match(_words(text)))
+
+
+def from_jamendo(what):
+    """For "hip hop from jamendo", "jamendo jazz", "jamendo": what is wanted from Jamendo ("hip hop", or
+    "" for anything); None when Jamendo was not asked for."""
+    words = _words(what).split()
+
+    if "jamendo" not in words:
+        return None
+
+    return " ".join(word for word in words if word not in _JAMENDO_WORDS)
 
 
 def _servers():

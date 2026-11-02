@@ -39,6 +39,7 @@ Keys are only ever set in Render, never in this repo.
 | `GOOGLE_TTS_API_KEY` | The voice |
 | `TAVILY_API_KEY` | Web search (a later chunk) |
 | `PYTHON_VERSION` | `3.12.7` |
+| `JAMENDO_CLIENT_ID` | Music from Jamendo (free, devportal.jamendo.com); without it, radio only |
 
 Optional, with defaults: `GROQ_MODEL` (openai/gpt-oss-20b), `GROQ_WHISPER_MODEL`
 (whisper-large-v3-turbo), `GOOGLE_TTS_VOICE` (en-GB-Chirp3-HD-Achird), `GOOGLE_TTS_RATE`,
@@ -114,6 +115,16 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   to be found. "Play Kendrick Lamar": an artist the model has to place gets a station of their genre,
   and the toy says it cannot choose their songs on the radio; a station named for them ("Bob Marley
   Radio") plays as itself.
+- Jamendo (`toy/jamendo.py`): "Hey Jarvis, play some hip hop from Jamendo" / "play Jamendo jazz" /
+  "play Jamendo": independent artists' songs, free to stream, 96 kbps MP3 over HTTPS. The toy is given
+  `/toy/music/<list>`, which sends it on to the next song each time it joins (as a station that drops
+  is joined again), so songs follow one another; a list is kept in memory for 12 hours, and its name
+  cannot be guessed. A request no station matches at all plays from Jamendo instead. Resuming moves
+  on to the next song. Needs `JAMENDO_CLIENT_ID` (free, devportal.jamendo.com); without it, it says so.
+  Jamendo's API is free for non-commercial use only (commercial: licensing@jamendo.com), crediting
+  each song's artist and Jamendo.
+- "Hey Jarvis, what's playing" / "who is this" / "what song is this": the Jamendo song and its artist,
+  or the station.
 
 ## Trying it from the PC
 

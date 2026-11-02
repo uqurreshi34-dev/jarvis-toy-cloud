@@ -1395,3 +1395,135 @@ def test_the_model_says_whether_an_artist_was_named(monkeypatch):
     assert brain.music_genre("something relaxing") == ("chillout", False) and brain.genre("x") == "chillout"
     monkeypatch.setattr(brain, "_first", lambda question, system: None)
     assert brain.music_genre("anything") is None
+
+
+# ---- Jamendo ------------------------------------------------------------------------------------
+
+from toy import jamendo  # noqa: E402
+
+
+def jamendo_track(name, artist, url):
+    return {"id": 1, "name": name, "artist_name": artist, "audio": url}
+
+
+@pytest.fixture
+def fresh_jamendo(monkeypatch):
+    jamendo.forget_all()
+    monkeypatch.setenv("JAMENDO_CLIENT_ID", "test-client")
+    yield
+    jamendo.forget_all()
+
+
+@pytest.mark.parametrize("words, tag", [("hip hop", "hiphop"), ("Hip-Hop", "hiphop"), ("r&b", "rnb"),
+                                        ("r and b", "rnb"), ("jazz", "jazz"), ("film score", "filmscore"),
+                                        ("something relaxing", None), ("", None)])
+def test_jamendo_genres_as_its_tags(words, tag):
+    assert jamendo.genre_tag(words) == tag
+
+
+@pytest.mark.parametrize("said, wanted", [("hip hop from jamendo", "hip hop"), ("jamendo jazz", "jazz"),
+                                          ("jamendo", ""), ("some music on jamendo", ""), ("jazz", None)])
+def test_jamendo_asked_for(said, wanted):
+    assert radio.from_jamendo(said) == wanted
+
+
+@pytest.mark.parametrize("said, now", [("what's playing", True), ("what song is this", True), ("who is this", True),
+                                       ("who's singing", True), ("what are we listening to", True),
+                                       ("what is this song please", True), ("what time is it", False),
+                                       ("who am i", False), ("play jazz", False)])
+def test_whats_playing_is_asked(said, now):
+    assert radio.now_asked(said) is now
+
+
+def test_jamendo_asks_for_a_genre_or_searches(fresh_jamendo, monkeypatch):
+    asked = []
+
+    def get(url, params=None, timeout=None):
+        asked.append(dict(params))
+        return Answer({"headers": {"status": "success"}, "results": [
+            jamendo_track("Feel Again", "Yurasoc", "https://prod-1.storage.jamendo.com/?trackid=1&format=mp31"),
+            jamendo_track("Plain", "Old", "http://insecure.example/x.mp3")]})
+
+    monkeypatch.setattr(jamendo.requests, "get", get)
+    found = jamendo.tracks("hip hop")
+    assert found == [{"name": "Feel Again", "artist": "Yurasoc",
+                      "url": "https://prod-1.storage.jamendo.com/?trackid=1&format=mp31"}], "HTTPS only, as the toy plays"
+    assert asked[0]["tags"] == "hiphop" and asked[0]["audioformat"] == "mp31" and asked[0]["client_id"] == "test-client"
+    jamendo.tracks("something dreamy")
+    assert asked[1]["search"] == "something dreamy" and "tags" not in asked[1]
+    jamendo.tracks("")
+    assert "tags" not in asked[2] and "search" not in asked[2]
+
+
+def test_jamendo_without_its_client_id_asks_nothing(monkeypatch):
+    monkeypatch.delenv("JAMENDO_CLIENT_ID", raising=False)
+    monkeypatch.setattr(jamendo.requests, "get", lambda *a, **k: pytest.fail("asked Jamendo without a client id"))
+    assert jamendo.tracks("jazz") == [] and not jamendo.ready()
+
+
+def test_jamendo_failing_is_no_songs(fresh_jamendo, monkeypatch):
+    def down(*a, **k):
+        raise jamendo.requests.ConnectionError("down")
+
+    monkeypatch.setattr(jamendo.requests, "get", down)
+    assert jamendo.tracks("jazz") == []
+    monkeypatch.setattr(jamendo.requests, "get", lambda *a, **k: Answer(
+        {"headers": {"status": "failed", "error_message": "bad client id"}, "results": []}))
+    assert jamendo.tracks("jazz") == []
+
+
+def test_a_jamendo_list_goes_round_and_runs_out(fresh_jamendo):
+    songs = [{"name": f"Song {n}", "artist": "A", "url": f"https://x.example/{n}"} for n in range(3)]
+    listed = jamendo.make_list("toy cam", songs, now=1000.0)
+    played = [jamendo.next_track(listed, now=1000.0)[1]["name"] for _ in range(4)]
+    assert sorted(played[:3]) == ["Song 0", "Song 1", "Song 2"] and played[3] == played[0], "every song, then round again"
+    assert jamendo.next_track(listed, now=1000.0 + jamendo.LIST_HOURS * 3600 + 1) is None
+    assert jamendo.next_track("not-a-list") is None
+
+
+def test_jamendo_keeps_at_most_so_many_lists(fresh_jamendo):
+    names = [jamendo.make_list("toy cam", [{"name": "S", "artist": "A", "url": "https://x"}], now=float(n))
+             for n in range(jamendo.MAX_LISTS + 5)]
+    assert jamendo.next_track(names[0], now=100.0) is None and jamendo.next_track(names[-1], now=100.0)
+
+
+def test_play_from_jamendo_on_the_toy(client, fresh_jamendo, monkeypatch):
+    """2 November 2026: independent artists' songs beside radio, credited when asked what's playing."""
+    monkeypatch.setattr(jamendo, "tracks", lambda what: [{"name": "Feel Again", "artist": "Yurasoc",
+                                                          "url": "https://prod-1.storage.jamendo.com/?trackid=1"}])
+    monkeypatch.setattr(radio, "find", lambda *a, **k: pytest.fail("Jamendo asked for, radio searched"))
+    answer = talk(client, "Hey Jarvis, play some hip hop from Jamendo", how="wake")
+    assert answer.data == b"Playing hip hop from Jamendo, sir: independent artists, free to stream."
+    playing = answer.headers["X-Jarvis-Play"]
+    assert playing.startswith("https://localhost/toy/music/")
+    assert talk(client, "Hey Jarvis, what's playing", how="wake").data == b"Nothing's playing, sir."
+    joined = client.get(playing[len("https://localhost"):])
+    assert joined.status_code == 302 and joined.headers["Location"] == "https://prod-1.storage.jamendo.com/?trackid=1"
+    assert talk(client, "Hey Jarvis, what's playing", how="wake").data == b"This is Feel Again by Yurasoc, from Jamendo, sir."
+    talk(client, "Hey Jarvis, stop", how="wake")
+    assert talk(client, "Hey Jarvis, what song is this", how="wake").data == b"Nothing's playing, sir."
+    assert client.get("/toy/music/not-a-list").status_code == 404
+
+
+def test_jamendo_not_set_up_says_so(client, monkeypatch):
+    monkeypatch.delenv("JAMENDO_CLIENT_ID", raising=False)
+    answer = talk(client, "Hey Jarvis, play jamendo jazz", how="wake")
+    assert "X-Jarvis-Play" not in answer.headers
+    assert answer.data == b"Jamendo isn't set up yet, sir: it needs a client id from devportal.jamendo.com."
+
+
+def test_no_station_at_all_plays_jamendo_instead(client, fresh_jamendo, monkeypatch):
+    monkeypatch.setattr(radio, "find", lambda *a, **k: None)
+    monkeypatch.setattr(jamendo, "tracks", lambda what: [{"name": "S", "artist": "A", "url": "https://x.example/1"}])
+    answer = talk(client, "Hey Jarvis, play dreamy synthwave", how="wake")
+    assert answer.headers["X-Jarvis-Play"].startswith("https://localhost/toy/music/")
+    assert answer.data == (b"I couldn't find a radio station for that, sir, so here's dreamy synthwave from Jamendo: "
+                           b"independent artists, free to stream.")
+    monkeypatch.setattr(jamendo, "tracks", lambda what: [])
+    assert talk(client, "Hey Jarvis, play dreamy synthwave", how="wake").data == b"I couldn't find a station for dreamy synthwave, sir."
+
+
+def test_whats_playing_names_the_station(client, monkeypatch):
+    monkeypatch.setattr(radio, "find", lambda *a, **k: {"name": "Bob Marley Radio", "url": "https://marley.example/live"})
+    talk(client, "Hey Jarvis, play bob marley", how="wake")
+    assert talk(client, "Hey Jarvis, who is this", how="wake").data == b"This is Bob Marley Radio, a radio station, sir."

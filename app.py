@@ -25,9 +25,9 @@ import secrets
 import threading
 import time
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 
-from toy import brain, faces, hearing, modes, radio, seen, social, store, voice, wake, world
+from toy import brain, faces, hearing, jamendo, modes, radio, seen, social, store, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -71,9 +71,38 @@ def _toy(name):
         name = name or "toy"
         if name not in _toys:
             _toys[name] = {"name": name, "muted": store.get_muted(name), "follow_until": 0.0,
-                           "fallback_said": None, "faces_wanted": 0, "play": ""}
+                           "fallback_said": None, "faces_wanted": 0, "play": "", "now": None}
 
         return _toys[name]
+
+
+def _jamendo_words(toy, wanted, instead=False):
+    """Plays Jamendo's [wanted] ("" for anything) on [toy]: what to say, or None when it has none."""
+    found = jamendo.tracks(wanted)
+
+    if not found:
+        return None
+
+    listed = jamendo.make_list(toy["name"], found)
+    toy["play"] = f"https://{request.host}/toy/music/{listed}"
+    toy["now"] = None
+    print(f"[toy-cloud] jamendo: {wanted or 'anything'!r} -> {len(found)} songs", flush=True)
+    kind = wanted or "popular songs"
+    first = "I couldn't find a radio station for that, sir, so here's " if instead else "Playing "
+    return f"{first}{kind} from Jamendo{'' if instead else ', sir'}: independent artists, free to stream."
+
+
+def now_words(toy):
+    """What's playing on [toy], with the artist credited (Jamendo's terms), or that nothing is."""
+    now = toy.get("now")
+
+    if not now:
+        return "Nothing's playing, sir."
+
+    if now.get("artist"):
+        return f"This is {now['name']} by {now['artist']}, from Jamendo, sir."
+
+    return f"This is {now['name']}, a radio station, sir."
 
 
 def _set_muted(toy, muted):
@@ -126,14 +155,26 @@ def play_words(toy, what, asked_for=None):
     X-Jarvis-Play): a station's address to play, or "pause", "resume" or "stop"."""
     if what != "play":
         toy["play"] = what
+        toy["now"] = None if what == "stop" else toy.get("now")
         return PLAY_WORDS[what]
+
+    wanted = radio.from_jamendo(asked_for)
+
+    if wanted is not None:
+        if not jamendo.ready():
+            return "Jamendo isn't set up yet, sir: it needs a client id from devportal.jamendo.com."
+
+        return _jamendo_words(toy, wanted) or f"I couldn't find {wanted or 'anything'} on Jamendo, sir."
 
     station = radio.find(asked_for, genre_for=brain.music_genre)
 
     if not station:
-        return f"I couldn't find a station for {asked_for}, sir."
+        # No station at all: Jamendo's independent artists, if it is set up and has some.
+        said = _jamendo_words(toy, asked_for, instead=True) if jamendo.ready() else None
+        return said or f"I couldn't find a station for {asked_for}, sir."
 
     toy["play"] = station["url"]
+    toy["now"] = {"name": station["name"]}
     print(f"[toy-cloud] radio: {asked_for!r} -> {station['name']} ({station['url']})", flush=True)
 
     # Radio plays what the station plays: an artist gets their kind of music, and is told so.
@@ -162,6 +203,9 @@ def answer_words(text, ip=None, toy=None):
 
     if music:
         return play_words(toy, *music), ""
+
+    if radio.now_asked(text):
+        return now_words(toy), ""
 
     face = faces.asked(text)
 
@@ -322,6 +366,23 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0, play=""):
         headers["X-Jarvis-Play"] = play
 
     return data, 200, headers
+
+
+@app.get("/toy/music/<listed>")
+def toy_music(listed):
+    """The next song of a Jamendo list: the toy joins here and is sent on to it, and joins again when it
+    ends. Open, as the toy joins music without its token; a list's name cannot be guessed."""
+    found = jamendo.next_track(listed)
+
+    if not found:
+        return jsonify({"error": "no such list"}), 404
+
+    owner, track = found
+    _toy(owner)["now"] = {"name": track["name"], "artist": track["artist"]}
+    print(f"[toy-cloud] jamendo: {track['name']!r} by {track['artist']}", flush=True)
+    answer = redirect(track["url"], code=302)
+    answer.headers["Cache-Control"] = "no-store"
+    return answer
 
 
 @app.get("/health")
