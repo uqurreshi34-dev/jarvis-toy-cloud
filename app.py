@@ -71,7 +71,8 @@ def _toy(name):
         name = name or "toy"
         if name not in _toys:
             _toys[name] = {"name": name, "muted": store.get_muted(name), "follow_until": 0.0,
-                           "fallback_said": None, "faces_wanted": 0, "play": "", "now": None}
+                           "fallback_said": None, "faces_wanted": 0, "play": "", "now": None,
+                           "source": None}
 
         return _toys[name]
 
@@ -86,10 +87,31 @@ def _jamendo_words(toy, wanted, instead=False):
     listed = jamendo.make_list(toy["name"], found)
     toy["play"] = f"https://{request.host}/toy/music/{listed}"
     toy["now"] = None
+    toy["source"] = {"list": listed, "url": toy["play"], "wanted": wanted}
     print(f"[toy-cloud] jamendo: {wanted or 'anything'!r} -> {len(found)} songs", flush=True)
     kind = wanted or "popular songs"
     first = "I couldn't find a radio station for that, sir, so here's " if instead else "Playing "
     return f"{first}{kind} from Jamendo{'' if instead else ', sir'}: independent artists, free to stream."
+
+
+def next_words(toy):
+    """The next song of what is playing: Jamendo's list again (the toy, told to play it afresh, joins it
+    and is sent on to its next song), the same genre until another is asked for; a live station has none."""
+    source = toy.get("source") or {}
+
+    if source.get("station"):
+        return (f"{source['station']} is a live radio station, sir, so I can't skip its songs. Ask me for some "
+                "music from Jamendo and I can.")
+
+    if not source.get("list"):
+        return "Nothing's playing to skip, sir."
+
+    if jamendo.has_list(source["list"]):
+        toy["play"] = source["url"]
+        return "Next one, sir."
+
+    # The list is gone (twelve hours on, or the cloud restarted): a new one of the same.
+    return _jamendo_words(toy, source.get("wanted", "")) or "I couldn't find another song on Jamendo, sir."
 
 
 def now_words(toy):
@@ -153,9 +175,13 @@ PLAY_WORDS = {
 def play_words(toy, what, asked_for=None):
     """What to say about a music request, telling the toy what to do (toy["play"], sent as
     X-Jarvis-Play): a station's address to play, or "pause", "resume" or "stop"."""
+    if what == "next":
+        return next_words(toy)
+
     if what != "play":
         toy["play"] = what
         toy["now"] = None if what == "stop" else toy.get("now")
+        toy["source"] = None if what == "stop" else toy.get("source")
         return PLAY_WORDS[what]
 
     wanted = radio.from_jamendo(asked_for)
@@ -175,6 +201,7 @@ def play_words(toy, what, asked_for=None):
 
     toy["play"] = station["url"]
     toy["now"] = {"name": station["name"]}
+    toy["source"] = {"station": station["name"]}
     print(f"[toy-cloud] radio: {asked_for!r} -> {station['name']} ({station['url']})", flush=True)
 
     # Radio plays what the station plays: an artist gets their kind of music, and is told so.

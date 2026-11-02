@@ -1558,3 +1558,43 @@ def test_jamendo_plays_songs_not_loops(fresh_jamendo, monkeypatch):
     monkeypatch.setattr(jamendo.requests, "get", get)
     assert [track["name"] for track in jamendo.tracks("chillout")] == ["Lofi Background Chillhop"]
     assert asked[0]["durationbetween"] == "90_900", "asked of Jamendo too, so a list is full of songs"
+
+
+@pytest.mark.parametrize("said", ["next", "next song", "play the next song", "play next one", "skip", "skip this song",
+                                  "skip it", "another song", "play another one", "change the song", "next track please"])
+def test_next_is_asked(said):
+    """2 November 2026: 'play next song' was taken as a station called 'next song', and Jamendo searched for it."""
+    assert radio.asked(said) == ("next", None)
+
+
+@pytest.mark.parametrize("said", ["play the next episode", "next week's weather", "skip to the end"])
+def test_next_is_only_the_next_song(said):
+    assert radio.asked(said) != ("next", None)
+
+
+def test_next_song_stays_in_the_genre(client, fresh_jamendo, monkeypatch):
+    wanted = []
+
+    def tracks(what):
+        wanted.append(what)
+        return [{"name": f"Song {n}", "artist": "A", "url": f"https://x.example/{n}"} for n in range(3)]
+
+    monkeypatch.setattr(jamendo, "tracks", tracks)
+    playing = talk(client, "Hey Jarvis, play some reggae from Jamendo", how="wake").headers["X-Jarvis-Play"]
+    answer = talk(client, "Hey Jarvis, play next song", how="wake")
+    assert answer.data == b"Next one, sir." and answer.headers["X-Jarvis-Play"] == playing, \
+        "the same list again: the toy joins it afresh and is sent on to its next song"
+    assert wanted == ["reggae"], "no new search: the same genre until another is asked for"
+    jamendo.forget_all()   # twelve hours on, or the cloud restarted
+    answer = talk(client, "Hey Jarvis, skip", how="wake")
+    assert wanted == ["reggae", "reggae"] and answer.headers["X-Jarvis-Play"] != playing
+    talk(client, "Hey Jarvis, stop", how="wake")
+    assert talk(client, "Hey Jarvis, next song", how="wake").data == b"Nothing's playing to skip, sir."
+
+
+def test_next_on_a_live_station_says_it_cannot(client, monkeypatch):
+    monkeypatch.setattr(radio, "find", lambda *a, **k: {"name": "Bob Marley Radio", "url": "https://marley.example/live"})
+    talk(client, "Hey Jarvis, play bob marley", how="wake")
+    answer = talk(client, "Hey Jarvis, next song", how="wake")
+    assert "X-Jarvis-Play" not in answer.headers
+    assert answer.data.startswith(b"Bob Marley Radio is a live radio station, sir, so I can't skip its songs.")

@@ -47,6 +47,10 @@ _STOP = re.compile(r"^(?:please\s+)?(?:stop|stop\s+playing|stop\s+the\s+(?:music
 _NOW = re.compile(r"^(?:what(?:s| is)\s+(?:playing|this(?:\s+song)?|(?:the\s+)?song)|what\s+song\s+is\s+(?:this|it|playing)"
                   r"|who(?:s| is)\s+(?:this|singing|playing)|who\s+sings\s+this|what\s+(?:am\s+i|are\s+we)\s+"
                   r"listening\s+to)(?:\s+(?:now|please))?$")
+# "Next song", "skip", "play the next one", "another song": the next song of what is playing.
+_NEXT = re.compile(r"^(?:please\s+)?(?:(?:play\s+)?(?:the\s+)?next(?:\s+(?:song|one|track))?|skip(?:\s+(?:it|this|"
+                   r"(?:this|the)\s+(?:song|one|track)))?|(?:play\s+)?another\s+(?:song|one|track)|change\s+"
+                   r"(?:the\s+)?(?:song|track))(?:\s+please)?$")
 _JAMENDO_WORDS = frozenset({"jamendo", "from", "on", "off", "some", "music", "songs", "a", "an", "the", "please"})
 
 # Words that say "music" without being a station or a genre.
@@ -60,8 +64,12 @@ def _words(text):
 
 
 def asked(text):
-    """("play", what), ("pause", None), ("resume", None) or ("stop", None); else None."""
+    """("play", what), ("next", None), ("pause", None), ("resume", None) or ("stop", None); else None."""
     words = _words(text)
+
+    # Before "play ...": "play the next song" is not a station called "the next song" (2 November 2026).
+    if _NEXT.match(words):
+        return "next", None
 
     if _PAUSE.match(words):
         return "pause", None

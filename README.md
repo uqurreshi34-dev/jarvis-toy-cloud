@@ -127,6 +127,10 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   each song's artist and Jamendo.
 - "Hey Jarvis, what's playing" / "who is this" / "what song is this": the Jamendo song and its artist,
   or the station.
+- "Hey Jarvis, next song" / "skip" / "another song": Jamendo's next song of the same list, so the same
+  genre until another is asked for (the toy is told to play the list afresh, and is sent on to its next
+  song); a new list of the same when the old one has gone. A live station's songs cannot be skipped,
+  and it says so.
 
 ## Trying it from the PC
 

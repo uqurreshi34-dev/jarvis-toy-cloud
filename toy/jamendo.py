@@ -140,6 +140,15 @@ def next_track(name, now=None):
         return kept["toy"], track
 
 
+def has_list(name, now=None):
+    """Whether list [name] is still kept (not too old, and the cloud not restarted since)."""
+    now = time.time() if now is None else now
+
+    with _lock:
+        kept = _lists.get(name)
+        return bool(kept and kept["tracks"] and now - kept["made"] <= LIST_HOURS * 3600)
+
+
 def forget_all():
     """Every list (for tests)."""
     with _lock:
