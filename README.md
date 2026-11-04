@@ -87,6 +87,12 @@ ceiling, a suitcase in a pillow. Retraining it three times fixed one room and co
    view. Not checked within `CHECK_WAIT` (20 s): not said, quiet rather than wrong. People are not
    checked here (their faces are), but wait with the things that came with them.
 
+Asked "Hey Jarvis, what can you see?", the cloud answers "Let me look, sir." with `X-Jarvis-Look: 1`;
+the toy takes a picture there and then and sends it to `POST /camera/look`, and the big brain names
+everything it is sure of in it, the person it last knew by name ("I can see you, Umer, and two
+bottles."), fetched from `/toy/announce` a few seconds later. So it stays quiet about bottles on its own,
+but names them when asked. Without the checker, the answer comes from the toy's last report as before.
+
 The checker is `checker/yolo26s_640.onnx` and its `.json` (size and names), made with
 `python tools/make_checker.py` on a computer (it needs Ultralytics) and committed, weights in half
 precision (19 MB). `TOY_CHECK=0` turns it off (everything said as the toy saw it);

@@ -355,15 +355,21 @@ def describe(toy, name=None, now=None):
         latest = _latest.get(toy)
         doubted = {label for who, label in _doubted if who == toy}
 
-    if latest:
-        latest = ({label: count for label, count in latest[0].items() if label not in doubted}, latest[1])
-
     if not latest:
         return "My eyes haven't told me anything yet, sir. Give me a moment."
 
     counts, at = latest
 
-    if not counts or now - at > FRESH_SECONDS:
+    if now - at > FRESH_SECONDS:
+        counts = {}
+
+    return words_for({label: count for label, count in counts.items() if label not in doubted}, name)
+
+
+def words_for(counts, name=None):
+    """What the toy says it can see in [counts] ({label: how many}); [name] is the person it last knew,
+    named when someone is in view: "I can see you, Umer, and two bottles."."""
+    if not counts:
         return "Nothing I recognise right now, sir."
 
     if name and "person" in counts:

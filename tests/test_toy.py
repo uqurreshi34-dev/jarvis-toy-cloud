@@ -501,6 +501,58 @@ def test_check_off_or_missing_says_everything_as_before(client, fresh_sight, mon
     assert check.ready() is False and check.status().startswith("missing")
 
 
+def take_look(client, toy="toy cam", token=TOKEN, body=LOOK, kind="image/jpeg"):
+    return client.post("/camera/look", data=body, headers={
+        "X-Jarvis-Token": token, "X-Jarvis-Camera": toy, "Content-Type": kind})
+
+
+def test_asked_what_it_sees_it_looks_with_the_big_brain(second_look, monkeypatch):
+    answer = talk(second_look, "Jarvis, what can you see?")
+    assert answer.data == toy_app.LOOK_WORDS.encode() and answer.headers["X-Jarvis-Look"] == "1"
+    assert "X-Jarvis-Look" not in talk(second_look, "Jarvis, what time is it").headers
+    monkeypatch.setattr(toy_app.faces, "last_known", lambda toy, **kept: "Umer")
+    second_look.sees["now"] = {"bottle": 2, "person": 1}
+    assert take_look(second_look).get_json() == {"ok": True, "say": True}
+    assert announce(second_look).data == b"I can see you, Umer, and two bottles."
+
+
+def test_a_look_names_what_the_small_brain_never_noticed(second_look):
+    see(second_look, report("person"))
+    announce(second_look)
+    second_look.sees["now"] = {"bottle": 1, "cup": 3}
+    take_look(second_look)
+    assert announce(second_look).data == b"I can see a bottle and three cups, sir."
+
+
+def test_a_look_at_nothing_or_a_failed_look_says_so(second_look, monkeypatch):
+    assert take_look(second_look).get_json()["say"] is True
+    assert announce(second_look).data == b"Nothing I recognise right now, sir."
+
+    def broken(jpeg):
+        raise ValueError("not a picture")
+
+    monkeypatch.setattr(check, "found", broken)
+    take_look(second_look)
+    assert announce(second_look).data == toy_app.LOOK_FAILED_WORDS.encode()
+
+
+def test_without_the_big_brain_it_answers_from_the_last_report(client, fresh_sight, monkeypatch):
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
+    see(client, report("cup"))
+    answer = talk(client, "Jarvis, what can you see?")
+    assert answer.data == b"I can see a cup, sir." and "X-Jarvis-Look" not in answer.headers
+
+
+def test_the_look_picture_is_checked_and_a_muted_toy_says_nothing(second_look):
+    assert take_look(second_look, token="nope").status_code == 403
+    assert take_look(second_look, kind="image/png").status_code == 400
+    assert take_look(second_look, body=b"x" * (toy_app.MAX_LOOK_BYTES + 1)).status_code == 413
+    talk(second_look, "Jarvis, mute")
+    second_look.sees["now"] = {"cup": 1}
+    assert take_look(second_look).get_json()["say"] is False
+    assert announce(second_look).status_code == 204
+
+
 def test_the_real_checker_sees_no_airplane_in_a_blank_ceiling():
     # In its own process: OpenCV's threads would make the fork test below unsafe.
     import subprocess

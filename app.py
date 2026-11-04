@@ -17,7 +17,9 @@ POST /camera/seen takes what the toy's own detection is sure of, as PC JARVIS do
 POST /toy/announce (raw PCM, or 204) and says them. POST /camera/face takes the picture of a face
 the toy found; recognising it is the next chunk, and nothing is kept. When the answer to a report also
 says "check": true, the toy sends that look's picture to POST /camera/check, where a bigger brain looks
-again (toy/check.py): only what both see is said.
+again (toy/check.py): only what both see is said. Asked what it can see, the cloud answers "Let me
+look, sir." with X-Jarvis-Look, and the toy sends a fresh picture to POST /camera/look, where the big brain
+names everything in it.
 
 GET /health answers {"ok": true} with nothing secret in it, for Render and UptimeRobot.
 """
@@ -44,6 +46,11 @@ FOLLOW_UP_SECONDS = 12.0
 MAX_SEEN_BYTES = 32 * 1024
 MAX_FACE_BYTES = 200 * 1024
 MAX_CHECK_BYTES = MAX_FACE_BYTES
+MAX_LOOK_BYTES = MAX_FACE_BYTES
+
+# "Hey Jarvis, what can you see?": said at once, while the toy takes a picture for the big brain to look at.
+LOOK_WORDS = "Let me look, sir."
+LOOK_FAILED_WORDS = "I couldn't get a proper look just then, sir. Ask me again."
 
 # In PC mode with the PC off, the toy falls back to the cloud: the first answer says so, and again
 # only after this long, so every answer is not prefixed with it.
@@ -75,7 +82,7 @@ def _toy(name):
         if name not in _toys:
             _toys[name] = {"name": name, "muted": store.get_muted(name), "follow_until": 0.0,
                            "fallback_said": None, "faces_wanted": 0, "play": "", "now": None,
-                           "source": None, "show": ""}
+                           "source": None, "show": "", "look": False}
 
         return _toys[name]
 
@@ -249,6 +256,12 @@ def answer_words(text, ip=None, toy=None):
         return said, ""
 
     if seen.sight_asked(text):
+        # With the big brain here, a fresh look: the toy sends a picture now (X-Jarvis-Look) and the big
+        # brain names everything in it (/camera/look). Without it, the toy's own last report.
+        if check.ready():
+            toy["look"] = True
+            return LOOK_WORDS, ""
+
         return seen.describe(name, faces.last_known(name)), ""
 
     town = world.lives_in_asked(text)
@@ -378,7 +391,7 @@ def _fallback_note(toy, now=None):
     return FALLBACK_WORDS
 
 
-def _pcm_response(said, mood="", switch="", faces_wanted=0, play="", show=""):
+def _pcm_response(said, mood="", switch="", faces_wanted=0, play="", show="", look=False):
     data = voice.pcm16(said)
 
     if not data:
@@ -401,6 +414,9 @@ def _pcm_response(said, mood="", switch="", faces_wanted=0, play="", show=""):
 
     if show:
         headers["X-Jarvis-Show"] = show
+
+    if look:
+        headers["X-Jarvis-Look"] = "1"
 
     return data, 200, headers
 
@@ -475,7 +491,8 @@ def toy_talk():
     wanted, toy["faces_wanted"] = toy["faces_wanted"], 0
     play, toy["play"] = toy.get("play", ""), ""
     show, toy["show"] = toy.get("show", ""), ""
-    answer = _pcm_response(said, mood, switch, wanted, play, show)
+    look, toy["look"] = toy.get("look", False), False
+    answer = _pcm_response(said, mood, switch, wanted, play, show, look)
 
     if len(answer) == 3:   # spoken (else the voice failed: its error as it is)
         answer[2].update(muted)
@@ -613,6 +630,37 @@ def camera_face():
         seen.take(name, everything=True)
         return jsonify({"ok": True, "say": False}), 200
 
+    return jsonify({"ok": True, "say": seen.ready(name)}), 200
+
+
+@app.post("/camera/look")
+def camera_look():
+    """"Hey Jarvis, what can you see?": the picture the toy took when told to look (X-Jarvis-Look). The big
+    brain names everything it is sure of in it (toy/check.py), the person it last knew by name; the words
+    are fetched from /toy/announce. Nothing of the picture is kept."""
+    if not _authorised():
+        return jsonify({"error": "unauthorised"}), 403
+
+    if request.content_length is None or request.content_length > MAX_LOOK_BYTES:
+        return jsonify({"error": "too large"}), 413
+
+    if request.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold() != "image/jpeg":
+        return jsonify({"error": "a look must be a JPEG"}), 400
+
+    name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+
+    try:
+        found = check.found(request.get_data(cache=False))
+        said = seen.words_for(found, faces.last_known(name))
+        print(f"[toy-cloud] look: {found or 'nothing'}", flush=True)
+    except Exception as error:   # noqa: BLE001 - a look that fails says so, never a crash
+        print(f"[toy-cloud] look: {type(error).__name__}: {error}", flush=True)
+        said = LOOK_FAILED_WORDS
+
+    if _toy(name)["muted"]:
+        return jsonify({"ok": True, "say": False}), 200
+
+    seen.queue(name, said)
     return jsonify({"ok": True, "say": seen.ready(name)}), 200
 
 
