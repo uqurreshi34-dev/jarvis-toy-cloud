@@ -15,7 +15,9 @@ where it sends and which token it uses:
 POST /camera/seen takes what the toy's own detection is sure of, as PC JARVIS does, and answers
 {"ok": true, "say": true} when something has come into view; the toy then fetches the words from
 POST /toy/announce (raw PCM, or 204) and says them. POST /camera/face takes the picture of a face
-the toy found; recognising it is the next chunk, and nothing is kept.
+the toy found; recognising it is the next chunk, and nothing is kept. When the answer to a report also
+says "check": true, the toy sends that look's picture to POST /camera/check, where a bigger brain looks
+again (toy/check.py): only what both see is said.
 
 GET /health answers {"ok": true} with nothing secret in it, for Render and UptimeRobot.
 """
@@ -27,7 +29,7 @@ import time
 
 from flask import Flask, jsonify, redirect, request
 
-from toy import brain, faces, hearing, jamendo, lights, modes, radio, seen, social, store, voice, wake, world
+from toy import brain, check, faces, hearing, jamendo, lights, modes, radio, seen, social, store, voice, wake, world
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -41,6 +43,7 @@ FOLLOW_UP_SECONDS = 12.0
 # A report of what the toy sees is small (names and boxes); a face picture is a VGA JPEG.
 MAX_SEEN_BYTES = 32 * 1024
 MAX_FACE_BYTES = 200 * 1024
+MAX_CHECK_BYTES = MAX_FACE_BYTES
 
 # In PC mode with the PC off, the toy falls back to the cloud: the first answer says so, and again
 # only after this long, so every answer is not prefixed with it.
@@ -428,7 +431,7 @@ def health():
         return jsonify({"ok": True, "muted": _toy(request.headers["X-Jarvis-Camera"].strip())["muted"]})
 
     if request.args.get("detail"):
-        return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status(),
+        return jsonify({"ok": True, "memory": store.kind(), "faces": faces.status(), "check": check.status(),
                         "process": os.getpid(), "parent": os.getppid(), "up_seconds": round(time.monotonic() - _STARTED)})
 
     return jsonify({"ok": True})
@@ -493,7 +496,7 @@ def camera_seen():
         return jsonify({"error": "too large"}), 413
 
     name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
-    due = seen.record(name, request.get_json(silent=True))
+    due = seen.record(name, request.get_json(silent=True), check=check.ready())
 
     if due is None:
         return jsonify({"error": "not a report"}), 400
@@ -510,6 +513,43 @@ def camera_seen():
         due = True
 
     # A muted toy says nothing unasked either.
+    if _toy(name)["muted"]:
+        seen.take(name, everything=True)
+        due = False
+
+    answer = {"ok": True, "say": bool(due)}
+
+    # Something new waits for the second look: the toy sends this look's picture to /camera/check.
+    if seen.wants_check(name):
+        answer["check"] = True
+
+    return jsonify(answer), 200
+
+
+@app.post("/camera/check")
+def camera_check():
+    """The picture of the look the toy reported something new in: the bigger brain looks again, and what
+    it does not see is not said (toy/check.py). Nothing of the picture is kept. Answers "say": true when
+    there are words for the toy."""
+    if not _authorised():
+        return jsonify({"error": "unauthorised"}), 403
+
+    if request.content_length is None or request.content_length > MAX_CHECK_BYTES:
+        return jsonify({"error": "too large"}), 413
+
+    if request.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold() != "image/jpeg":
+        return jsonify({"error": "a look must be a JPEG"}), 400
+
+    name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+
+    try:
+        found = check.found(request.get_data(cache=False))
+    except Exception as error:   # noqa: BLE001 - a look that fails sees nothing: not said, never a crash
+        print(f"[toy-cloud] check: {type(error).__name__}: {error}", flush=True)
+        found = {}
+
+    due = seen.checked(name, found)
+
     if _toy(name)["muted"]:
         seen.take(name, everything=True)
         due = False

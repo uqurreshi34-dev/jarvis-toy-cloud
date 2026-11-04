@@ -21,6 +21,7 @@ SPEECH = b"RIFF" + b"\0" * 40 + b"\1\0" * 16000   # a header and half a second o
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("TOY_TOKEN", TOKEN)
+    monkeypatch.setenv("TOY_CHECK", "0")   # the second look has its own tests below
     toy_app._toys.clear()
     toy_app.store.forget_all()   # muted is kept there now, and must not carry from test to test
     heard = {"text": ""}
@@ -388,6 +389,135 @@ def test_face_is_taken_and_let_go(client):
     assert client.post("/camera/face", data=b"png", headers=headers).status_code == 400
     headers["X-Jarvis-Token"] = "nope"
     assert client.post("/camera/face", data=b"\xff\xd8", headers=headers).status_code == 403
+
+
+# ---- the second look: the cloud's bigger brain checks what the toy thinks it saw ----------------
+
+from toy import check  # noqa: E402
+
+LOOK = b"\xff\xd8a look"
+
+
+def look(client, toy="toy cam", token=TOKEN, body=LOOK, kind="image/jpeg"):
+    return client.post("/camera/check", data=body, headers={
+        "X-Jarvis-Token": token, "X-Jarvis-Camera": toy, "Content-Type": kind})
+
+
+@pytest.fixture
+def second_look(client, fresh_sight, monkeypatch):
+    """The check on, with a checker that sees what the test says it sees."""
+    monkeypatch.setenv("TOY_CHECK", "1")
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
+    monkeypatch.setattr(check, "ready", lambda: True)
+    sees = {"now": {}}
+    monkeypatch.setattr(check, "found", lambda jpeg: dict(sees["now"]))
+    client.sees = sees
+    return client
+
+
+def test_a_new_thing_waits_for_the_second_look_and_is_said_when_it_agrees(second_look):
+    assert see(second_look, report("cup")).get_json() == {"ok": True, "say": False, "check": True}
+    assert announce(second_look).status_code == 204
+    second_look.sees["now"] = {"cup": 1, "person": 2}
+    assert look(second_look).get_json() == {"ok": True, "say": True}
+    assert announce(second_look).data == b"I can see a cup, sir."
+
+
+def test_what_the_second_look_does_not_see_is_never_said_nor_named(second_look):
+    see(second_look, report("airplane"))
+    assert look(second_look).get_json() == {"ok": True, "say": False}
+    assert announce(second_look).status_code == 204
+    # Still in view: not asked about again, and "what can you see" leaves it out.
+    assert see(second_look, report("airplane")).get_json() == {"ok": True, "say": False}
+    assert seen.describe("toy cam") == "Nothing I recognise right now, sir."
+
+
+def test_it_agrees_on_as_many_as_it_sees(second_look):
+    see(second_look, report("cup", "cup", "cup", "clock"))
+    second_look.sees["now"] = {"cup": 2}
+    assert look(second_look).get_json()["say"] is True
+    assert announce(second_look).data == b"I can see two cups, sir."
+
+
+def test_people_are_not_checked_but_wait_with_what_is(second_look):
+    assert see(second_look, report("person")).get_json() == {"ok": True, "say": True}
+    assert announce(second_look).data == b"I can see someone, sir."
+    seen.forget()
+    assert see(second_look, report("person", "airplane")).get_json() == {"ok": True, "say": False, "check": True}
+    assert look(second_look).get_json() == {"ok": True, "say": True}
+    assert announce(second_look).data == b"I can see someone, sir."
+
+
+def test_never_checked_in_time_is_not_said(fresh_sight):
+    assert seen.record("t", report("clock"), now=100.0, check=True) is False
+    assert seen.wants_check("t", now=101.0)
+    assert seen.take("t", now=101.0) is None
+    assert not seen.wants_check("t", now=100.0 + seen.CHECK_WAIT + 1)
+    assert not seen.ready("t", now=100.0 + seen.CHECK_WAIT + 1)
+    assert seen.take("t", now=100.0 + seen.CHECK_WAIT + 1) is None
+    # A person with it is still said, once the wait is over.
+    seen.forget()
+    seen.record("t", report("person", "clock"), now=200.0, check=True)
+    assert seen.take("t", now=200.0 + seen.CHECK_WAIT + 1) == "I can see someone, sir."
+
+
+def test_a_known_face_and_the_second_look_make_one_sentence(fresh_sight):
+    seen.record("t", report("person", "cup", "airplane"), now=100.0, check=True)
+    assert seen.face_arrived("t", "Umer", now=101.0)
+    assert seen.checked("t", {"cup": 1}, now=102.0)
+    assert seen.take("t", now=102.0) == "I can see you, Umer, and a cup."
+
+
+def test_a_look_that_fails_sees_nothing(second_look, monkeypatch):
+    def broken(jpeg):
+        raise ValueError("not a picture")
+
+    monkeypatch.setattr(check, "found", broken)
+    see(second_look, report("person", "clock"))
+    assert look(second_look).get_json() == {"ok": True, "say": True}
+    assert announce(second_look).data == b"I can see someone, sir."
+
+
+def test_the_look_is_checked(second_look):
+    assert look(second_look, token="nope").status_code == 403
+    assert look(second_look, kind="image/png").status_code == 400
+    assert look(second_look, body=b"x" * (toy_app.MAX_CHECK_BYTES + 1)).status_code == 413
+
+
+def test_a_muted_toy_says_nothing_after_a_look(second_look):
+    talk(second_look, "Jarvis, mute")
+    see(second_look, report("cup"))
+    second_look.sees["now"] = {"cup": 1}
+    assert look(second_look).get_json()["say"] is False
+    assert announce(second_look).status_code == 204
+
+
+def test_check_off_or_missing_says_everything_as_before(client, fresh_sight, monkeypatch, tmp_path):
+    monkeypatch.setattr(seen, "FACE_WAIT", 0.0)
+    assert check.ready() is False and check.status() == "off"
+    assert see(client, report("airplane")).get_json() == {"ok": True, "say": True}
+    monkeypatch.setenv("TOY_CHECK", "1")
+    monkeypatch.setenv("TOY_CHECK_MODEL", str(tmp_path / "gone.onnx"))
+    assert check.ready() is False and check.status().startswith("missing")
+
+
+def test_the_real_checker_sees_no_airplane_in_a_blank_ceiling():
+    # In its own process: OpenCV's threads would make the fork test below unsafe.
+    import subprocess
+
+    code = (
+        "import cv2, numpy as np\n"
+        "from toy import check\n"
+        "assert check.ready(), check.status()\n"
+        "ceiling = np.full((480, 640, 3), 235, np.uint8)\n"
+        "cv2.circle(ceiling, (560, 380), 60, (255, 255, 255), -1)\n"
+        "assert check.found(cv2.imencode('.jpg', ceiling)[1].tobytes()) == {}\n"
+        "assert check.status().startswith('ready'), check.status()\n"
+    )
+    env = {key: value for key, value in os.environ.items() if not key.startswith("TOY_CHECK")}
+    done = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
 
 
 # ---- the time, the date, the weather, and live answers -----------------------------------------

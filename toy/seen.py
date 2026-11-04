@@ -9,6 +9,12 @@ and says them on its speaker.
 
 TOY_DETECT_IGNORE names things never said ("dining table,sink": what the model takes furniture
 for). Nothing here is kept beyond memory.
+
+Two brains (4 November 2026): with the cloud's checker on (toy/check.py), anything but a person that
+comes into view waits for the toy's picture of that look (POST /camera/check, asked for with "check":
+true on the answer to its report), and is said only if the bigger brain sees it too. Not checked within
+CHECK_WAIT, it is not said: the toy stays quiet rather than say an airplane that is not there. Something
+the checker did not see is not said again while it stays in view, nor named by "what can you see".
 """
 
 import os
@@ -28,6 +34,10 @@ PENDING_SECONDS = 60.0
 # face lets it go at once; with no face at all it goes with the toy's next report (15 s at most).
 FACE_WAIT = 5.0
 
+# What comes into view waits this long for the cloud's second look (the toy sends its picture at once;
+# a look takes about two seconds on Render's free plan), then is dropped unsaid.
+CHECK_WAIT = 20.0
+
 _NUMBERS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "sheep", "skis": "skis",
@@ -36,8 +46,10 @@ _IRREGULAR = {"person": "people", "mouse": "mice", "knife": "knives", "sheep": "
 
 _lock = threading.Lock()
 _present = {}    # (toy, label) -> {"last": monotonic time last in view, "said": how many said}
-_pending = {}    # toy -> [{"said", "at", "until", "counts"}, ...], said in order; held until "until"
+_pending = {}    # toy -> [{"said", "at", "until", "counts", "checking", "check_until"}, ...], said in order;
+                 # held until "until" (a face), and while "checking" until "check_until" (the second look)
 _latest = {}     # toy -> ({label: count}, monotonic time): its last report
+_doubted = set() # (toy, label): in view, but the checker did not see it; cleared when it comes into view again
 
 # The toy reports every change, and every 15 seconds while anything is in view: a report older
 # than this, with things in it, is not what is in view now.
@@ -100,9 +112,10 @@ def words(arrived):
     return f"I can see {said}, sir."
 
 
-def record(toy, payload, now=None):
+def record(toy, payload, now=None, check=False):
     """Takes a report; True when something is now worth saying (fetch it with take()), False when
-    not, None when the report is not one."""
+    not, None when the report is not one. With [check], what came into view (but people) waits for
+    the cloud's second look (checked()) before it is said: wants_check() says when to ask for it."""
     labels = _clean(payload)
 
     if labels is None:
@@ -125,6 +138,7 @@ def record(toy, payload, now=None):
 
             if seen is None or now - seen["last"] > AWAY_SECONDS:
                 seen = {"last": now, "said": 0}
+                _doubted.discard((toy, label))
 
             seen["last"] = now
             _present[(toy, label)] = seen
@@ -135,7 +149,9 @@ def record(toy, payload, now=None):
 
         if due:
             until = now + FACE_WAIT if "person" in due else now
-            _pending.setdefault(toy, []).append({"said": words(due), "at": now, "until": until, "counts": due})
+            checking = {label for label in due if label != "person"} if check else set()
+            _pending.setdefault(toy, []).append({"said": None, "at": now, "until": until, "counts": due,
+                                                 "checking": checking, "check_until": now + CHECK_WAIT})
 
     return ready(toy, now)
 
@@ -145,15 +161,106 @@ def queue(toy, sentence, now=None):
     now = time.monotonic() if now is None else now
 
     with _lock:
-        _pending.setdefault(toy, []).append({"said": sentence, "at": now, "until": now, "counts": None})
+        _pending.setdefault(toy, []).append({"said": sentence, "at": now, "until": now, "counts": None,
+                                             "checking": set(), "check_until": now})
+
+
+def _waiting(item, now):
+    """True while [item] is held: for a face, or for the cloud's second look."""
+    return item["until"] > now or bool(item["checking"] and item["check_until"] > now)
+
+
+def _sentence(item):
+    """What [item] says now, or None when nothing of it is left to say."""
+    counts = item["counts"]
+
+    if counts is None:
+        return item["said"]
+
+    if not counts:
+        return None
+
+    name, people = item.get("name"), counts.get("person", 0)
+
+    if not name or not people:
+        return words(counts)
+
+    others = {label: count for label, count in counts.items() if label != "person"}
+    extras = []
+
+    if people > 1:
+        extras.append(f"{_NUMBERS.get(people - 1, people - 1)} other {'person' if people == 2 else 'people'}")
+
+    if others:
+        extras.append(words(others)[len("I can see "):-len(", sir.")])
+
+    extra = " and ".join(extras)
+
+    if item.get("greeting"):
+        return f"{item['greeting']} I can see {extra} too." if extra else item["greeting"]
+
+    return f"I can see you, {name}, and {extra}." if extra else f"I can see you, {name}."
 
 
 def ready(toy, now=None):
-    """True when something for [toy] can be said now (not held for a face, not stale)."""
+    """True when something for [toy] can be said now (not held for a face or a check, not stale)."""
     now = time.monotonic() if now is None else now
 
     with _lock:
-        return any(item["until"] <= now and now - item["at"] <= PENDING_SECONDS for item in _pending.get(toy, []))
+        return any(not _waiting(item, now) and now - item["at"] <= PENDING_SECONDS and _said_after_check(item)
+                   for item in _pending.get(toy, []))
+
+
+def _said_after_check(item):
+    """True when something of [item] is left once anything never checked is dropped."""
+    if item["counts"] is None:
+        return True
+
+    return any(label not in item["checking"] for label in item["counts"])
+
+
+def wants_check(toy, now=None):
+    """True while something [toy] reported waits for the cloud's second look."""
+    now = time.monotonic() if now is None else now
+
+    with _lock:
+        return any(item["checking"] and item["check_until"] > now for item in _pending.get(toy, []))
+
+
+def checked(toy, found, now=None):
+    """The cloud's second look at what [toy] saw: [found] ({label: how many}) is what the bigger brain is
+    sure of. What waits for it is kept as far as both agree; the rest is dropped and, while it stays in
+    view, never said nor named. True when something can be said now."""
+    now = time.monotonic() if now is None else now
+    dropped = set()
+
+    with _lock:
+        kept = []
+
+        for item in _pending.get(toy, []):
+            for label in item["checking"]:
+                agreed = min(item["counts"].get(label, 0), int(found.get(label, 0)))
+
+                if agreed:
+                    item["counts"][label] = agreed
+                else:
+                    item["counts"].pop(label, None)
+                    dropped.add(label)
+
+            item["checking"] = set()
+
+            if item["counts"] is None or item["counts"]:
+                kept.append(item)
+
+        if toy in _pending:
+            _pending[toy] = kept
+
+        _doubted.update((toy, label) for label in dropped)
+
+    if dropped:
+        print(f"[toy-cloud] check: not said, the second look did not see {', '.join(sorted(dropped))}", flush=True)
+
+    return ready(toy, now)
 
 
 def take(toy, now=None, everything=False):
@@ -163,13 +270,27 @@ def take(toy, now=None, everything=False):
 
     with _lock:
         waiting = _pending.pop(toy, [])
-        held = [] if everything else [item for item in waiting if item["until"] > now]
+        held = [] if everything else [item for item in waiting if _waiting(item, now)]
 
         if held:
             _pending[toy] = held
 
-    fresh = [item["said"] for item in waiting
-             if item["until"] <= now and now - item["at"] <= PENDING_SECONDS]
+        fresh = []
+
+        for item in waiting:
+            if _waiting(item, now) or now - item["at"] > PENDING_SECONDS:
+                continue
+
+            # Never checked in time: not said (quiet rather than wrong), and not said again while in view.
+            for label in item["checking"]:
+                item["counts"].pop(label, None)
+                _doubted.add((toy, label))
+
+            sentence = _sentence(item)
+
+            if sentence:
+                fresh.append(sentence)
+
     return " ".join(fresh) if fresh else None
 
 
@@ -204,26 +325,8 @@ def face_arrived(toy, name, greeting=None, now=None):
 
         item["until"] = now
 
-        if not name:
-            return True
-
-        counts = item["counts"]
-        people = counts["person"]
-        others = {label: count for label, count in counts.items() if label != "person"}
-        extras = []
-
-        if people > 1:
-            extras.append(f"{_NUMBERS.get(people - 1, people - 1)} other {'person' if people == 2 else 'people'}")
-
-        if others:
-            extras.append(words(others)[len("I can see "):-len(", sir.")])
-
-        extra = " and ".join(extras)
-
-        if greeting:
-            item["said"] = f"{greeting} I can see {extra} too." if extra else greeting
-        else:
-            item["said"] = f"I can see you, {name}, and {extra}." if extra else f"I can see you, {name}."
+        if name:
+            item["name"], item["greeting"] = name, greeting
 
     return True
 
@@ -250,6 +353,10 @@ def describe(toy, name=None, now=None):
 
     with _lock:
         latest = _latest.get(toy)
+        doubted = {label for who, label in _doubted if who == toy}
+
+    if latest:
+        latest = ({label: count for label, count in latest[0].items() if label not in doubted}, latest[1])
 
     if not latest:
         return "My eyes haven't told me anything yet, sir. Give me a moment."
@@ -280,3 +387,4 @@ def forget():
         _present.clear()
         _pending.clear()
         _latest.clear()
+        _doubted.clear()

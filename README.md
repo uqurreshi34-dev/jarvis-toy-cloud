@@ -14,7 +14,8 @@ PC JARVIS keeps everything else: reports, trading, files, face names.
 
 - `GET /health`: `{"ok": true}`. For Render's health check and UptimeRobot.
   `/health?detail=1` adds the memory, the face models (`ready`, or what they are doing and for how
-  long), and which process answered with its parent: open it in a browser, no laptop needed.
+  long), the second look's checker (`ready (0.1 s a look)`, `not loaded yet`, `off`, `missing ...`),
+  and which process answered with its parent: open it in a browser, no laptop needed.
   Every face the toy sends is logged as `faces (process): ...`, learning or recognising, and a face
   waits at most 20 s for busy models instead of hanging the toy.
   The models are loaded by the first request each process answers, never at import: Render's gunicorn
@@ -71,6 +72,30 @@ knows the same words (keep `toy/modes.py` and its `TOY_SWITCH` alike).
   minutes later while they sit there.
 - `POST /camera/face`: a face the toy found. Checked and let go for now; recognising it comes with
   the memory database. `TOY_DETECT_IGNORE` names things never said ("dining table,sink").
+
+### Two brains: the cloud's second look
+
+The toy's own brain (YOLO26n, int8, 256 x 256) is quick but imagines things: an airplane in a bright
+ceiling, a suitcase in a pillow. Retraining it three times fixed one room and cost beds. So:
+
+1. Something new (but a person) comes into view: the answer to `/camera/seen` says `"check": true`.
+2. The toy sends that look's picture (its VGA JPEG) to `POST /camera/check`.
+3. A bigger brain looks again (`toy/check.py`: YOLO26s in full precision at 640 x 640, through
+   onnxruntime, about 150 MB and two seconds a look on Render's free plan). Only what both see is said,
+   as many as both see. The picture is let go.
+4. What the second look did not see is not said, nor named by "what can you see", while it stays in
+   view. Not checked within `CHECK_WAIT` (20 s): not said, quiet rather than wrong. People are not
+   checked here (their faces are), but wait with the things that came with them.
+
+The checker is `checker/yolo26s_640.onnx` and its `.json` (size and names), made with
+`python tools/make_checker.py` on a computer (it needs Ultralytics) and committed, weights in half
+precision (19 MB). `TOY_CHECK=0` turns it off (everything said as the toy saw it);
+`TOY_CHECK_MODEL=checker/yolo26n_640.onnx` is the smaller one, if Render ever runs short of memory
+(the service measured 395 MB with yolo26s, 315 MB with yolo26n, of the free plan's 512);
+`TOY_CHECK_SURE` is how sure it must be (0.25). On 79 of the toy's own pictures from October and
+November 2026 it saw none of the 24 airplanes or 27 suitcases the toy imagined. It also missed some
+real things the toy saw (half the laptops, two of three phones, the bed): the toy says less, but what
+it says is there.
 
 ## The time, the weather, and live questions
 
