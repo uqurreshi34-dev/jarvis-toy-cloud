@@ -13,10 +13,11 @@ today's date and the town the toy is in, so "tomorrow", "this year" and "here" m
 
 import os
 import re
+import time
 
 import requests
 
-from toy import search
+from toy import record, search
 
 PROVIDERS = {
     "groq": {
@@ -156,13 +157,24 @@ def spoken(text):
 
 
 def _first(question, system):
-    """The first provider's answer to [question], or None when every one failed."""
-    for name in order():
+    """The first provider's answer to [question], or None when every one failed. Each call is timed for
+    the request's record (toy/record.py), and a provider that fails is noted as failing over."""
+    names = order()
+
+    for at, name in enumerate(names):
+        started = time.monotonic()
+        keyed = bool((os.getenv(PROVIDERS[name]["key_env"]) or "").strip())   # one with no key is not asked
+
         try:
             said = _ask(name, question, system)
         except Exception as error:
             print(f"[toy-cloud] {name} failed: {error}", flush=True)
+            record.ai_call(name, time.monotonic() - started, False)
+            record.fallback(f"{name}>{names[at + 1] if at + 1 < len(names) else 'none'}")
             continue
+
+        if keyed:
+            record.ai_call(name, time.monotonic() - started, bool(said))
 
         if said:
             return said
@@ -196,6 +208,7 @@ def _searched(question, today, city):
 
     for fresh in (False, True):
         found = search.search(query, fresh=fresh)
+        record.searched()
         print(f"[toy-cloud] search{' (news)' if fresh else ''} {query!r}: {len(found)} found", flush=True)
 
         if not found:

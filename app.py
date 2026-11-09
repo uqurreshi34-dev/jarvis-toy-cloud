@@ -22,6 +22,10 @@ look, sir." with X-Jarvis-Look, and the toy sends a fresh picture to POST /camer
 names everything in it.
 
 GET /health answers {"ok": true} with nothing secret in it, for Render and UptimeRobot.
+
+Every talk, look and second look is recorded (toy/record.py: how it was handled, never the words), and
+"Hey Jarvis, request report" says the last week's numbers. GET /report shows them as a page, behind
+TOY_REPORT_PASSWORD (asked for by the browser; any user name).
 """
 
 import os
@@ -31,7 +35,8 @@ import time
 
 from flask import Flask, jsonify, redirect, request
 
-from toy import brain, check, faces, hearing, jamendo, lights, modes, radio, seen, social, store, voice, wake, world
+from toy import (brain, check, faces, hearing, jamendo, lights, modes, radio, record, seen, social, store, voice,
+                 wake, world)
 
 # What the toy sends at most: it stops recording at ten seconds, 32000 bytes a second, plus room.
 MAX_TALK_BYTES = 44 + 32000 * 12
@@ -234,28 +239,38 @@ def answer_words(text, ip=None, toy=None):
     which = social.kind(text)
 
     if which:
+        record.note(intent="affection" if which in social.FOND_KINDS else "social")
         return social.reply(which), "affection" if which in social.FOND_KINDS else ""
 
+    if record.report_asked(text):
+        record.note(intent="report")
+        return record.report_words(), ""
+
     if lights.asked(text):
+        record.note(intent="lights")
         toy["show"] = "lights"
         return lights.SAID, ""
 
     music = radio.asked(text)
 
     if music:
+        record.note(intent="music")
         return play_words(toy, *music), ""
 
     if radio.now_asked(text):
+        record.note(intent="now playing")
         return now_words(toy), ""
 
     face = faces.asked(text)
 
     if face:
+        record.note(intent="faces")
         said, wanted = faces.handle(name, *face)
         toy["faces_wanted"] = wanted
         return said, ""
 
     if seen.sight_asked(text):
+        record.note(intent="what can you see")
         # With the big brain here, a fresh look: the toy sends a picture now (X-Jarvis-Look) and the big
         # brain names everything in it (/camera/look). Without it, the toy's own last report.
         if check.ready():
@@ -267,18 +282,21 @@ def answer_words(text, ip=None, toy=None):
     town = world.lives_in_asked(text)
 
     if town:
+        record.note(intent="where I live")
         return world.learn_place(name, town), ""
 
     asked = world.time_asked(text)
     where = None
 
     if asked:
+        record.note(intent="time")
         where = world.place(ip, name)
         return world.time_words(asked, world.now(where)), ""
 
     when = world.weather_asked(text)
 
     if when:
+        record.note(intent="weather")
         where = world.place(ip, name)
 
         if where.get("lat") is None:
@@ -295,6 +313,7 @@ def answer_words(text, ip=None, toy=None):
         city = where.get("city") or ""
         return brain.answer(f"What is the weather in {city} {when}? ({text})", today=today, city=city), ""
 
+    record.note(intent="question")
     where = where or world.place(ip, name)
     moment = world.now(where)
     today = f"{moment.strftime('%A')} {moment.day} {moment.strftime('%B %Y')}, {moment.strftime('%H:%M')}"
@@ -311,16 +330,26 @@ def respond(wav, heard_by, toy, ip=None):
     hands_free = heard_by in ("sound", "wake")
     following = hands_free and time.monotonic() < toy["follow_until"]
 
+    record.note(audio_s=round(max(0, len(wav) - 44) / 32000, 2))
+
     if len(wav) < MIN_VOICE_BYTES:
+        record.note(outcome="too short")
         return (None, "", "") if hands_free else ("That was too short, sir. Hold the button while you speak.", "", "")
 
-    text = hearing.transcribe(wav)
+    started = time.monotonic()
+
+    try:
+        text = hearing.transcribe(wav)
+    finally:
+        record.timed("hearing", time.monotonic() - started)
 
     if not text:
+        record.note(outcome="nothing heard")
         return (None, "", "") if hands_free else ("I couldn't make out what you said, sir.", "", "")
 
     if wake.only_filler(text):
         print(f'[filtered] "{text}" (single filler word)', flush=True)
+        record.note(outcome="filler")
         return (None, "", "") if hands_free else ("I only caught a stray word, sir.", "", "")
 
     if hands_free and not following:
@@ -331,14 +360,17 @@ def respond(wav, heard_by, toy, ip=None):
 
         if command is None:
             print(f'[ignored] "{text}" (not said to JARVIS)', flush=True)
+            record.note(outcome="not for JARVIS")
             return None, "", ""
 
         print(f'[toy] woken by "{text}"{" (Jarvis heard on the toy)" if board_heard else ""}', flush=True)
 
         if not command:
             if toy["muted"]:
+                record.note(outcome="muted")
                 return None, "", ""
 
+            record.note(intent="name alone")
             toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS
             return "Yes, sir?", "", ""
 
@@ -351,15 +383,18 @@ def respond(wav, heard_by, toy, ip=None):
     asked = mute_asked(text)
 
     if asked == "unmute":
+        record.note(intent="unmute")
         _set_muted(toy, False)
         print("[toy] unmuted", flush=True)
         return "I'm listening again, sir.", "", ""
 
     if toy["muted"]:
         print(f'[ignored] "{text}" (muted)', flush=True)
+        record.note(outcome="muted")
         return None, "", ""
 
     if asked == "mute":
+        record.note(intent="mute")
         _set_muted(toy, True)
         print("[toy] muted", flush=True)
         return f"Muted, sir. Say {wake.WAKE_PHRASE}, unmute, when you want me.", "", ""
@@ -367,13 +402,16 @@ def respond(wav, heard_by, toy, ip=None):
     switch = modes.switch_asked(text)
 
     if switch:
+        record.note(intent="switch mode")
         print(f"[toy] switching to {switch} mode", flush=True)
         toy["follow_until"] = 0.0
         return SWITCH_WORDS[switch], "", switch
 
     print(f'[toy] heard "{text}"', flush=True)
 
+    started = time.monotonic()
     said, mood = answer_words(text, ip, toy)
+    record.timed("answer", time.monotonic() - started)
 
     toy["follow_until"] = time.monotonic() + FOLLOW_UP_SECONDS if hands_free else 0.0
     return said, mood, ""
@@ -392,9 +430,13 @@ def _fallback_note(toy, now=None):
 
 
 def _pcm_response(said, mood="", switch="", faces_wanted=0, play="", show="", look=False):
+    started = time.monotonic()
     data = voice.pcm16(said)
+    record.timed("voice", time.monotonic() - started)
+    record.note(chars=len(" ".join(str(said or "").split())))
 
     if not data:
+        record.note(voice_failed=True)
         return jsonify({"error": "No audio."}), 503
 
     headers = {
@@ -470,11 +512,23 @@ def toy_talk():
     toy = _toy((request.headers.get("X-Jarvis-Camera") or "").strip())
 
     fell_back = (request.headers.get("X-Jarvis-Fallback") or "").strip().casefold() == "pc"
+    made = record.begin("talk", toy["name"], heard_by=heard_by, pc_fallback=fell_back)
 
     try:
-        said, mood, switch = respond(request.get_data(cache=False), heard_by, toy, _toy_address())
+        answer = _talk(request.get_data(cache=False), heard_by, toy, fell_back)
+    finally:
+        record.end(made)
+
+    return answer
+
+
+def _talk(wav, heard_by, toy, fell_back):
+    """toy_talk's answer to [wav], recorded by it."""
+    try:
+        said, mood, switch = respond(wav, heard_by, toy, _toy_address())
     except Exception as error:
         print(f"[toy-cloud] talk failed: {error}", flush=True)
+        record.note(outcome="error", error=type(error).__name__)
         said, mood, switch = "Something went wrong there, sir.", "", ""
 
     # X-Jarvis-Muted on every answer, silence included: the toy's ring pulses red while it is muted.
@@ -514,6 +568,7 @@ def camera_seen():
 
     name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
     due = seen.record(name, request.get_json(silent=True), check=check.ready())
+    record.count(name, "seen")
 
     if due is None:
         return jsonify({"error": "not a report"}), 400
@@ -558,19 +613,25 @@ def camera_check():
         return jsonify({"error": "a look must be a JPEG"}), 400
 
     name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+    made = record.begin("check", name)
+    started = time.monotonic()
 
     try:
         found = check.found(request.get_data(cache=False))
     except Exception as error:   # noqa: BLE001 - a look that fails sees nothing: not said, never a crash
         print(f"[toy-cloud] check: {type(error).__name__}: {error}", flush=True)
+        record.note(failed=type(error).__name__)
         found = {}
 
+    record.timed("brain", time.monotonic() - started)
     due = seen.checked(name, found)
 
     if _toy(name)["muted"]:
         seen.take(name, everything=True)
         due = False
 
+    record.note(said=bool(due))
+    record.end(made)
     return jsonify({"ok": True, "say": bool(due)}), 200
 
 
@@ -604,6 +665,7 @@ def camera_face():
 
     name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
     picture = request.get_data(cache=False)
+    record.count(name, "face")
     hour = world.now(world.place(_toy_address(), name)).hour
 
     before = faces.last_seen(name)
@@ -648,20 +710,92 @@ def camera_look():
         return jsonify({"error": "a look must be a JPEG"}), 400
 
     name = (request.headers.get("X-Jarvis-Camera") or "").strip() or "toy"
+    made = record.begin("look", name)
+    started = time.monotonic()
 
     try:
         found = check.found(request.get_data(cache=False))
         said = seen.words_for(found, faces.last_known(name))
         print(f"[toy-cloud] look: {found or 'nothing'}", flush=True)
+        record.note(said=True, things=sum(found.values()) if found else 0)
     except Exception as error:   # noqa: BLE001 - a look that fails says so, never a crash
         print(f"[toy-cloud] look: {type(error).__name__}: {error}", flush=True)
+        record.note(said=False, failed=type(error).__name__)
         said = LOOK_FAILED_WORDS
+    finally:
+        record.timed("brain", time.monotonic() - started)
+        record.end(made)
 
     if _toy(name)["muted"]:
         return jsonify({"ok": True, "say": False}), 200
 
     seen.queue(name, said)
     return jsonify({"ok": True, "say": seen.ready(name)}), 200
+
+
+def _report_allowed():
+    """The browser's password (HTTP Basic, any user name) against TOY_REPORT_PASSWORD. Not set: refused."""
+    expected = (os.getenv("TOY_REPORT_PASSWORD") or "").strip()
+    supplied = (request.authorization.password if request.authorization else "") or ""
+    return bool(expected) and secrets.compare_digest(supplied.strip(), expected)
+
+
+def _report_days():
+    try:
+        return min(max(int(request.args.get("days") or 7), 1), record.KEEP_DAYS)
+    except ValueError:
+        return 7
+
+
+_REPORT_ROWS = (
+    ("Things asked", "talks"), ("Answered", "answered"), ("Answered with no AI (could run on the chip)", "free"),
+    ("Needed the AI", "model"), ("Needed a web search too", "search"),
+    ("How each was heard", "heard_by"), ("What they were", "intents"), ("How each ended", "outcomes"),
+    ("Hearing, median ms", "hearing_ms"), ("Answering, median ms", "answer_ms"), ("Voice, median ms", "voice_ms"),
+    ("Whole answer, median ms", "total_ms"), ("Whole answer, slowest ms", "slowest_ms"),
+    ("Voice characters", "voice_chars"), ("AI calls", "ai_calls"), ("AI calls by provider", "ai_by"),
+    ("AI call, median ms", "ai_ms"), ("Failed over", "fallbacks"),
+    ("What can you see (big brain looks)", "looks"), ("Look, median ms", "look_ms"),
+    ("Second looks", "checks"), ("Second looks said", "checks_said"), ("Second look, median ms", "check_ms"),
+    ("Faces sent", "faces"), ("Sighting reports", "seen"),
+)
+
+
+def _shown(value):
+    if isinstance(value, dict):
+        return ", ".join(f"{key}: {count}" for key, count in value.items()) or "none"
+
+    return "none" if value is None else f"{value:,}" if isinstance(value, int) else str(round(value))
+
+
+@app.get("/report")
+def report_page():
+    """The toy's request report as a page (?days=30, ?format=json). Counts and times only, no words."""
+    if not _report_allowed():
+        return "The report needs its password (TOY_REPORT_PASSWORD in Render).", 401, {
+            "WWW-Authenticate": 'Basic realm="JARVIS toy report"', "Cache-Control": "no-store"}
+
+    days = _report_days()
+    numbers = record.summary(days)
+
+    if request.args.get("format") == "json":
+        return jsonify(numbers), 200, {"Cache-Control": "no-store"}
+
+    from html import escape
+
+    rows = "".join(f"<tr><th>{escape(label)}</th><td>{escape(_shown(numbers.get(key)))}</td></tr>"
+                   for label, key in _REPORT_ROWS)
+    spans = " ".join(f'<a href="?days={span}">{span} day{"s" if span != 1 else ""}</a>' for span in (1, 7, 30, 90))
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>JARVIS toy report</title>
+<style>body{{font:15px system-ui,sans-serif;margin:16px;max-width:760px;color:#1d1d1b;background:#faf9f5}}
+table{{border-collapse:collapse;width:100%}}th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;
+vertical-align:top}}th{{font-weight:600;width:45%}}a{{margin-right:12px}}
+@media (prefers-color-scheme: dark){{body{{color:#eee;background:#1f1e1d}}th,td{{border-color:#444}}a{{color:#9ab}}}}
+</style></head><body><h1>JARVIS toy: the last {days} day{'s' if days != 1 else ''}</h1>
+<p>{escape(record.report_words(days))}</p><p>{spans}</p><table>{rows}</table>
+<p>How each request was handled, never what was said or seen. Kept {record.KEEP_DAYS} days.</p></body></html>"""
+    return page, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
 
 
 # Which process this is, in the log: one process must answer the toy, or a face lesson begun in one

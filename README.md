@@ -41,6 +41,7 @@ Keys are only ever set in Render, never in this repo.
 | `TAVILY_API_KEY` | Web search (a later chunk) |
 | `PYTHON_VERSION` | `3.12.7` |
 | `JAMENDO_CLIENT_ID` | Music from Jamendo (free, devportal.jamendo.com); without it, radio only |
+| `TOY_REPORT_PASSWORD` | The password for the `/report` page (any user name). Without it the page is refused |
 
 Optional, with defaults: `GROQ_MODEL` (openai/gpt-oss-20b), `GROQ_WHISPER_MODEL`
 (whisper-large-v3-turbo), `GOOGLE_TTS_VOICE` (en-GB-Chirp3-HD-Achird), `GOOGLE_TTS_RATE`,
@@ -48,6 +49,22 @@ Optional, with defaults: `GROQ_MODEL` (openai/gpt-oss-20b), `GROQ_WHISPER_MODEL`
 
 Render: build `pip install -r requirements.txt && python -m toy.faces`, start
 `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 60`, health check `/health`.
+
+## The request record and report
+
+Every talk, "what can you see" look and second look gets one record in the database (`toy_requests`,
+kept 90 days): which toy, how it was heard (`button`, `sound`, `wake`), what it was (an intent label
+such as `time`, `affection`, `music`, `question`, never the words), how it was answered (`free`: the
+cloud's own phrases, which a phrase list on the chip could do; `model`: the AI; `search`: the AI after
+a web search), each AI call (provider, ms, ok), what failed over (`groq>gemini`), and how long hearing,
+answering, the voice and the whole took. Faces and sighting reports come often, so they are counted per
+day (`toy_counts`), written with the next record or every six hours, so Neon's database can sleep.
+Records are written in the background: the toy never waits for them. Without `DATABASE_URL` they are
+kept in memory. `toy/record.py`.
+
+- "Hey Jarvis, request report" (also "weekly report", "usage report"): the toy says the last 7 days.
+- `GET /report`: the same as a page, with every number (`?days=1`, `7`, `30`, `90`; `?format=json`).
+  The browser asks for `TOY_REPORT_PASSWORD`. Counts and times only, nothing said or seen.
 
 ## PC mode and cloud mode
 

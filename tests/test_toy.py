@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as toy_app  # noqa: E402
 from toy import brain, social, voice, wake  # noqa: E402
 
+ANSWER = brain.answer   # the real one, before a test stands in for it
+
 TOKEN = "test-token"
 SPEECH = b"RIFF" + b"\0" * 40 + b"\1\0" * 16000   # a header and half a second of samples
 
@@ -24,6 +26,8 @@ def client(monkeypatch):
     monkeypatch.setenv("TOY_CHECK", "0")   # the second look has its own tests below
     toy_app._toys.clear()
     toy_app.store.forget_all()   # muted is kept there now, and must not carry from test to test
+    toy_app.record.forget_all()
+    monkeypatch.setattr(toy_app.record, "later", lambda work, *args: work(*args))   # written at once
     heard = {"text": ""}
     monkeypatch.setattr(toy_app.hearing, "transcribe", lambda wav: heard["text"])
     monkeypatch.setattr(toy_app.brain, "answer", lambda text, **context: f"answer to {text}")
@@ -1802,3 +1806,85 @@ def test_the_toy_is_told_to_do_the_light_show(client):
     answer = talk(client, "Hey Jarvis, do a light show", how="wake")
     assert answer.headers["X-Jarvis-Show"] == "lights" and answer.data == lights.SAID.encode()
     assert "X-Jarvis-Show" not in talk(client, "Hey Jarvis, what time is it", how="wake").headers, "once, not again"
+
+
+# ---- the request record and report ---------------------------------------------------------------
+
+from toy import record  # noqa: E402
+
+
+def kept(kind=None):
+    return [made for made in record.records(7) if kind is None or made["kind"] == kind]
+
+
+def test_a_free_answer_is_recorded_without_its_words(client):
+    talk(client, "Jarvis, what time is it")
+    made = kept("talk")[-1]
+    assert made["toy"] == "toy cam" and made["heard_by"] == "sound" and made["intent"] == "time"
+    assert made["route"] == "free" and made["outcome"] == "answered" and made["ai"] == []
+    assert {"hearing", "answer", "voice", "total"} <= set(made["ms"]) and made["chars"] > 0
+    assert "what time" not in str(made).casefold(), "how it was handled, never what was said"
+
+
+def test_a_question_records_its_ai_calls_and_failovers(client, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setattr(toy_app.brain, "answer", ANSWER)
+
+    def ask(name, question, system=None):
+        if name == "groq":
+            raise RuntimeError("rate limited")
+        return "KNOWN" if system and system.startswith(brain.DECIDE) else "Paris, sir."
+
+    monkeypatch.setattr(brain, "_ask", ask)
+    talk(client, "Jarvis, what is the capital of France")
+    made = kept("talk")[-1]
+    assert made["intent"] == "question" and made["route"] == "model"
+    assert [call["provider"] for call in made["ai"]] == ["groq", "gemini", "groq", "gemini"]
+    assert made["fallbacks"] == ["groq>gemini", "groq>gemini"]
+
+
+def test_silence_is_recorded_with_why(client):
+    talk(client, "the telly is on")
+    talk(client, "uh")
+    assert [made["outcome"] for made in kept("talk")] == ["not for JARVIS", "filler"]
+
+
+def test_looks_and_second_looks_are_recorded(second_look):
+    see(second_look, report("cup"))
+    second_look.sees["now"] = {}
+    look(second_look)
+    second_look.sees["now"] = {"cup": 1}
+    take_look(second_look)
+    assert [(made["kind"], made["said"]) for made in kept() if made["kind"] != "talk"] == \
+        [("check", False), ("look", True)]
+    assert record.counts(7).get("seen") == 1
+
+
+def test_the_report_is_spoken_by_the_toy(client, monkeypatch):
+    def answer(text, **context):
+        record.ai_call("groq", 0.4, True)
+        return f"answer to {text}"
+
+    monkeypatch.setattr(toy_app.brain, "answer", answer)
+    talk(client, "Jarvis, what time is it")
+    talk(client, "Jarvis, what is a rainbow")
+    said = talk(client, "Jarvis, request report").data.decode()
+    assert said.startswith("Request report, sir. You asked me 2 things in the last 7 days.")
+    assert "Of those, 1 was answered with no AI, 1 needed the AI, and 0 a web search as well." in said
+    assert kept("talk")[-1]["intent"] == "report"
+
+
+def test_nothing_on_record_is_said_plainly(client):
+    assert record.report_words().startswith("I have nothing on record")
+
+
+def test_the_report_page_needs_its_password(client, monkeypatch):
+    assert client.get("/report").status_code == 401
+    monkeypatch.setenv("TOY_REPORT_PASSWORD", "sesame")
+    assert client.get("/report", auth=("any", "wrong")).status_code == 401
+    talk(client, "Jarvis, what time is it")
+    page = client.get("/report?days=30", auth=("any", "sesame"))
+    assert page.status_code == 200 and b"the last 30 days" in page.data and b"Answered with no AI" in page.data
+    numbers = client.get("/report?format=json", auth=("umer", "sesame")).get_json()
+    assert numbers["talks"] == 1 and numbers["free"] == 1 and numbers["intents"] == {"time": 1}
