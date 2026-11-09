@@ -1872,6 +1872,7 @@ def test_the_report_is_spoken_by_the_toy(client, monkeypatch):
     said = talk(client, "Jarvis, request report").data.decode()
     assert said.startswith("Request report, sir. You asked me 2 things in the last 7 days.")
     assert "Of those, 1 was answered with no AI, 1 needed the AI, and 0 a web search as well." in said
+    assert "1 could work on my chip with no internet." in said, "the time could; a question never"
     assert kept("talk")[-1]["intent"] == "report"
 
 
@@ -1888,3 +1889,10 @@ def test_the_report_page_needs_its_password(client, monkeypatch):
     assert page.status_code == 200 and b"the last 30 days" in page.data and b"Answered with no AI" in page.data
     numbers = client.get("/report?format=json", auth=("umer", "sesame")).get_json()
     assert numbers["talks"] == 1 and numbers["free"] == 1 and numbers["intents"] == {"time": 1}
+    assert numbers["chip"] == 1 and b"Could work on the chip" in page.data
+
+
+def test_free_is_not_the_same_as_offline(client):
+    talk(client, "Jarvis, what's the weather like")
+    numbers = record.summary(7)
+    assert numbers["free"] == 1 and numbers["chip"] == 0, "the weather is free, but needs a forecast from outside"

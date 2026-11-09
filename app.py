@@ -748,7 +748,8 @@ def _report_days():
 
 
 _REPORT_ROWS = (
-    ("Things asked", "talks"), ("Answered", "answered"), ("Answered with no AI (could run on the chip)", "free"),
+    ("Things asked", "talks"), ("Answered", "answered"), ("Answered with no AI (free, but still online)", "free"),
+    ("Could work on the chip with no internet (time, mute, lights, affection)", "chip"),
     ("Needed the AI", "model"), ("Needed a web search too", "search"),
     ("How each was heard", "heard_by"), ("What they were", "intents"), ("How each ended", "outcomes"),
     ("Hearing, median ms", "hearing_ms"), ("Answering, median ms", "answer_ms"), ("Voice, median ms", "voice_ms"),

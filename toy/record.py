@@ -36,6 +36,12 @@ KEEP_DAYS = 90
 COUNTS_EVERY_SECONDS = 6 * 3600.0
 MEMORY_KEEP = 5000
 
+# What a chip could answer by itself, with no internet once it can hear these few commands: fixed replies
+# that need nothing from outside. Not the weather (a forecast service), the report (kept in the database),
+# what it can see (the big brain), faces (the database), music, or any question. The time needs the
+# chip's clock set from the internet once after switching on, then holds.
+CHIP_INTENTS = frozenset({"time", "affection", "social", "lights", "mute", "unmute", "name alone", "switch mode"})
+
 _local = threading.local()
 _lock = threading.Lock()
 _memory = {"records": [], "counts": Counter()}
@@ -281,6 +287,7 @@ def summary(days=7, found=None, counted=None):
         "routes": dict(Counter(record.get("route") for record in answered)),
         "intents": dict(Counter(record.get("intent") for record in answered).most_common()),
         "free": sum(1 for record in answered if record.get("route") == "free"),
+        "chip": sum(1 for record in answered if record.get("intent") in CHIP_INTENTS),
         "model": sum(1 for record in answered if record.get("route") == "model"),
         "search": sum(1 for record in answered if record.get("route") == "search"),
         "hearing_ms": _median((record.get("ms") or {}).get("hearing") for record in talks),
@@ -324,7 +331,8 @@ def report_words(days=7):
     if numbers["answered"]:
         free = numbers["free"]
         parts.append(f"Of those, {free} {'was' if free == 1 else 'were'} answered with no AI, "
-                     f"{numbers['model']} needed the AI, and {numbers['search']} a web search as well.")
+                     f"{numbers['model']} needed the AI, and {numbers['search']} a web search as well. "
+                     f"{numbers['chip']} could work on my chip with no internet.")
 
     if numbers["total_ms"] is not None:
         parts.append(f"An answer took {_seconds(numbers['total_ms'])} typically, "

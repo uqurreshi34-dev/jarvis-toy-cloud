@@ -63,6 +63,10 @@ Records are written in the background: the toy never waits for them. Without `DA
 kept in memory. `toy/record.py`.
 
 - "Hey Jarvis, request report" (also "weekly report", "usage report"): the toy says the last 7 days.
+  Free is not offline: "answered with no AI" (`free`) still went online to be heard and spoken, and
+  some free answers need outside help anyway (the weather's forecast, faces in the database). "Could
+  work on the chip" (`chip`, `record.CHIP_INTENTS`) counts only fixed replies a chip could give by
+  itself: the time, mute, the light show, affection.
 - `GET /report`: the same as a page, with every number (`?days=1`, `7`, `30`, `90`; `?format=json`).
   The browser asks for `TOY_REPORT_PASSWORD`. Counts and times only, nothing said or seen.
 
